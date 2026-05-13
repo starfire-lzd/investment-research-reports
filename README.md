@@ -26,3 +26,23 @@ npm run build
 ```
 
 脚本会构建站点、提交新增报告，并推送到 GitHub。GitHub Actions 会自动部署 Pages。
+
+## 微信桥接后台服务
+
+微信桥接不依赖 OpenClaw 常驻进程，状态保存在本地 `.weixin-bridge/`，该目录不会提交到 Git。
+
+```bash
+npm run weixin:login
+npm run weixin:service:install
+npm run weixin:service:status
+npm run weixin:service:stop
+npm run weixin:service:restart
+npm run weixin:service:uninstall
+```
+
+默认服务以本地命令模式运行。需要把微信消息转给 Codex 时，使用：
+
+```bash
+npm run weixin:service:uninstall
+npm run weixin:service:install -- --codex
+```

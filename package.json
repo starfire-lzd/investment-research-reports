@@ -4,7 +4,18 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "node scripts/build-site.mjs"
+    "build": "node scripts/build-site.mjs",
+    "weixin:login": "node scripts/weixin-bridge.mjs login",
+    "weixin:listen": "node scripts/weixin-bridge.mjs listen",
+    "weixin:send": "node scripts/weixin-bridge.mjs send",
+    "weixin:service:install": "node scripts/weixin-service.mjs install",
+    "weixin:service:start": "node scripts/weixin-service.mjs start",
+    "weixin:service:stop": "node scripts/weixin-service.mjs stop",
+    "weixin:service:restart": "node scripts/weixin-service.mjs restart",
+    "weixin:service:status": "node scripts/weixin-service.mjs status",
+    "weixin:service:uninstall": "node scripts/weixin-service.mjs uninstall"
+  },
+  "dependencies": {
+    "qrcode-terminal": "^0.12.0"
   }
 }
-
