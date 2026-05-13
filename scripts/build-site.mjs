@@ -14,6 +14,10 @@ const reportSlugs = {
   "盘中分析.md": "intraday",
   "盘后复盘.md": "post-market"
 };
+const systemPages = [
+  { title: "交易规则库", fileName: "rules.md", output: "rules.html", description: "长期可复用的判断、执行和风控规则" },
+  { title: "观察池", fileName: "watchlist.md", output: "watchlist.html", description: "按方向维护的核心标的与验证规则" }
+];
 
 function escapeHtml(value) {
   return value
@@ -169,20 +173,23 @@ async function listReports() {
   return reports;
 }
 
-function pageShell({ title, body, active = "" }) {
+function pageShell({ title, body, active = "", depth = 0 }) {
+  const prefix = depth > 0 ? "../" : "";
   return `<!doctype html>
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>${escapeHtml(title)}</title>
-  <link rel="stylesheet" href="${active ? "../" : ""}assets/site.css">
+  <link rel="stylesheet" href="${prefix}assets/site.css">
 </head>
 <body>
   <header class="topbar">
-    <a class="brand" href="${active ? "../" : ""}index.html">投研日报</a>
+    <a class="brand" href="${prefix}index.html">投研日报</a>
     <nav>
-      <a href="${active ? "../" : ""}index.html">全部报告</a>
+      <a href="${prefix}index.html">全部报告</a>
+      <a href="${prefix}rules.html">规则库</a>
+      <a href="${prefix}watchlist.html">观察池</a>
     </nav>
   </header>
   <main>${body}</main>
@@ -220,6 +227,12 @@ function renderIndex(reports) {
       <h1>盘前、盘中、盘后复盘</h1>
       <div class="meta">${reports.length} 篇报告，${grouped.size} 个交易日</div>
     </section>
+    <section class="system-links">
+      ${systemPages.map((page) => `<a class="system-card" href="${page.output}">
+        <span>${page.title}</span>
+        <strong>${page.description}</strong>
+      </a>`).join("")}
+    </section>
     ${days || "<p>暂无报告。</p>"}`
   });
 }
@@ -235,7 +248,18 @@ function renderReport(report, nearby) {
     </div>
     <div class="content">${markdownToHtml(report.markdown)}</div>
   </article>`;
-  return pageShell({ title: `${report.date} ${report.label}`, body, active: report.date });
+  return pageShell({ title: `${report.date} ${report.label}`, body, active: report.date, depth: 1 });
+}
+
+function renderSystemPage(page, markdown) {
+  const body = `<article class="report">
+    <div class="report-title">
+      <p>交易系统</p>
+      <h1>${page.title}</h1>
+    </div>
+    <div class="content">${markdownToHtml(markdown)}</div>
+  </article>`;
+  return pageShell({ title: page.title, body });
 }
 
 async function main() {
@@ -244,6 +268,14 @@ async function main() {
   await fs.mkdir(path.join(dist, "assets"), { recursive: true });
   await fs.writeFile(path.join(dist, "index.html"), renderIndex(reports));
   await fs.writeFile(path.join(dist, "assets", "site.css"), await fs.readFile(path.join(root, "site", "site.css"), "utf8"));
+
+  for (const page of systemPages) {
+    const source = path.join(root, page.fileName);
+    if (await exists(source)) {
+      const markdown = await fs.readFile(source, "utf8");
+      await fs.writeFile(path.join(dist, page.output), renderSystemPage(page, markdown));
+    }
+  }
 
   for (const report of reports) {
     const reportDir = path.join(dist, report.date);

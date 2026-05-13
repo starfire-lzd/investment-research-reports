@@ -41,6 +41,12 @@ a {
   backdrop-filter: blur(14px);
 }
 
+.topbar nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+}
+
 .brand {
   color: var(--text);
   font-weight: 700;
@@ -80,6 +86,41 @@ main {
   margin-top: 28px;
   padding-top: 22px;
   border-top: 1px solid var(--line);
+}
+
+.system-links {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 12px;
+  margin: 18px 0 28px;
+}
+
+.system-card {
+  display: block;
+  min-height: 104px;
+  padding: 18px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--text);
+}
+
+.system-card:hover {
+  border-color: var(--accent);
+}
+
+.system-card span {
+  display: block;
+  color: var(--accent-strong);
+  font-weight: 700;
+}
+
+.system-card strong {
+  display: block;
+  margin-top: 8px;
+  font-size: 16px;
+  font-weight: 500;
+  color: var(--muted);
 }
 
 .day-head {
@@ -241,4 +282,3 @@ footer {
     padding: 18px 14px;
   }
 }
-
