@@ -9,8 +9,6 @@
     "weixin:import-openclaw": "npm --prefix tools/weixin-bridge run import-openclaw --",
     "weixin:status": "npm --prefix tools/weixin-bridge run status --",
     "weixin:listen": "npm --prefix tools/weixin-bridge run listen --",
-    "weixin:send": "npm --prefix tools/weixin-bridge run send --",
-    "weixin:send-media": "npm --prefix tools/weixin-bridge run send-media --",
     "weixin:server": "npm --prefix tools/weixin-bridge run server --",
     "weixin:service:install": "npm --prefix tools/weixin-bridge run service:install --",
     "weixin:service:start": "npm --prefix tools/weixin-bridge run service:start --",

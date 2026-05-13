@@ -3,6 +3,7 @@ import fs from "node:fs/promises";
 import http from "node:http";
 import path from "node:path";
 import { spawn } from "node:child_process";
+import process from "node:process";
 
 import {
   appendLog,
@@ -27,6 +28,7 @@ import {
   writeInbox,
   writeJson,
 } from "./weixin-core.js";
+import { notifyStart, notifyStop } from "@tencent-weixin/openclaw-weixin/dist/src/api/api.js";
 
 const root = projectRoot;
 const stateDir = getStateDir(root);
@@ -35,6 +37,9 @@ const paths = getPaths(stateDir);
 const port = Number(process.env.WEIXIN_API_PORT || 8787);
 const host = process.env.WEIXIN_API_HOST || "127.0.0.1";
 const apiToken = process.env.WEIXIN_API_TOKEN || ""; // 可选；非空时强制鉴权
+let stopRequested = false;
+let httpServer: http.Server | null = null;
+let shutdownPromise: Promise<void> | null = null;
 
 function usage() {
   console.log(`Usage:
@@ -52,10 +57,10 @@ Endpoints:
   GET  /accounts
   GET  /contacts
   GET  /inbox?limit=50&since=ISO
-  POST /send         body: { to?, message, account? }
-  POST /send/markdown body: { to?, message, account? }
-  POST /send/batch   body: { messages: [{ to?, message, account? }] }
-  POST /send/media   body: { to?, message?, mediaUrl|filePath, account?, markdown? }`);
+  POST /send         body: { to?, message, account?, reply? }
+  POST /send/markdown body: { to?, message, account?, reply? }
+  POST /send/batch   body: { messages: [{ to?, message, account?, reply? }] }
+  POST /send/media   body: { to?, message?, mediaUrl|filePath, account?, markdown?, reply? }`);
 }
 
 const startedAt = new Date().toISOString();
@@ -71,6 +76,29 @@ const runtime = {
   lastSendError: null,
   accounts: {},
 };
+
+function syncStandaloneEnv() {
+  process.env.WEIXIN_BRIDGE_STATE = stateDir;
+  process.env.OPENCLAW_STATE_DIR = stateDir;
+  process.env.CLAWDBOT_STATE_DIR = stateDir;
+}
+
+async function notifyLifecycle(account, action) {
+  const fn = action === "start" ? notifyStart : notifyStop;
+  try {
+    await fn({
+      baseUrl: account.baseUrl || "https://ilinkai.weixin.qq.com",
+      token: account.token,
+      timeoutMs: 10_000,
+    });
+    await appendLog(stateDir, `lifecycle ${action} account=${account.accountId}`);
+  } catch (err) {
+    await appendLog(
+      stateDir,
+      `lifecycle ${action} failed account=${account.accountId} err=${String(err).slice(0, 800)}`,
+    );
+  }
+}
 
 function authorized(req) {
   if (!apiToken) return true;
@@ -181,7 +209,8 @@ async function handleInbox(req, res) {
   });
 }
 
-async function doSend({ to, message, account: accountId, markdown = false }) {
+async function doSend({ to, message, account: accountId, markdown = false, reply = false }) {
+  syncStandaloneEnv();
   if (typeof message !== "string" || !message.trim()) {
     throw Object.assign(new Error("message 必须为非空字符串"), { statusCode: 400 });
   }
@@ -194,22 +223,29 @@ async function doSend({ to, message, account: accountId, markdown = false }) {
   } catch (err) {
     throw Object.assign(new Error(err.message), { statusCode: 404 });
   }
-  const result = await sendMessage({ stateDir, account, to, message, markdown });
+  const result = await sendMessage({ stateDir, account, to, message, markdown, reply });
   runtime.outboundCount += 1;
-  await appendLog(stateDir, `http send to=${result.to} clientId=${result.clientId} hasCtx=${result.hasContextToken}`);
+  await appendLog(
+    stateDir,
+    `http send to=${result.to} clientId=${result.clientId} reply=${result.reply} usedCtx=${result.usedContextToken} hasCtx=${result.hasContextToken}`,
+  );
   return { ...result, account: account.accountId };
 }
 
-async function doSendMedia({ to, message = "", mediaUrl, filePath, account: accountId, markdown = false }) {
+async function doSendMedia({ to, message = "", mediaUrl, filePath, account: accountId, markdown = false, reply = false }) {
+  syncStandaloneEnv();
   let account;
   try {
     account = await resolveAccount(stateDir, accountId);
   } catch (err) {
     throw Object.assign(new Error(err.message), { statusCode: 404 });
   }
-  const result = await sendMediaMessage({ stateDir, account, to, message, mediaUrl, filePath, markdown });
+  const result = await sendMediaMessage({ stateDir, account, to, message, mediaUrl, filePath, markdown, reply });
   runtime.outboundCount += 1;
-  await appendLog(stateDir, `http send-media to=${result.to} clientId=${result.clientId} type=${result.mediaType} hasCtx=${result.hasContextToken}`);
+  await appendLog(
+    stateDir,
+    `http send-media to=${result.to} clientId=${result.clientId} type=${result.mediaType} reply=${result.reply} usedCtx=${result.usedContextToken} hasCtx=${result.hasContextToken}`,
+  );
   return { ...result, account: account.accountId };
 }
 
@@ -317,6 +353,7 @@ async function route(req, res) {
 }
 
 async function startHttpServer() {
+  syncStandaloneEnv();
   const server = http.createServer((req, res) => {
     route(req, res).catch((err) => {
       console.error(`unhandled ${req.method} ${req.url}: ${err}`);
@@ -333,6 +370,7 @@ async function startHttpServer() {
   const tokenHint = apiToken ? "with API token (Bearer required)" : "no API token (open on bind interface)";
   console.log(`weixin HTTP server listening on http://${host}:${port} (${tokenHint})`);
   await appendLog(stateDir, `http server start host=${host} port=${port} token=${apiToken ? "yes" : "no"}`);
+  httpServer = server;
   return server;
 }
 
@@ -383,18 +421,20 @@ async function runCodex(text, opts) {
 }
 
 async function listenAccountLoop(account, opts) {
+  syncStandaloneEnv();
   runtime.accounts[account.accountId] = {
     listenState: "idle",
     inboundCount: 0,
     lastListenError: null,
   };
+  await notifyLifecycle(account, "start");
   console.log(`listen loop start account=${account.accountId} codex=${opts.codex} write=${opts.write}`);
   await appendLog(stateDir, `listen start account=${account.accountId} codex=${opts.codex}`);
 
   let nextTimeoutMs = defaultLongPollTimeoutMs;
   let consecutiveFailures = 0;
 
-  while (true) {
+  while (!stopRequested) {
     runtime.listenState = "polling";
     runtime.accounts[account.accountId].listenState = "polling";
     let messages = [];
@@ -423,6 +463,7 @@ async function listenAccountLoop(account, opts) {
     }
 
     for (const msg of messages) {
+      if (stopRequested) break;
       const from = msg.from_user_id || "";
       const text = textFromItems(msg.item_list);
       if (!from || !text) continue;
@@ -452,9 +493,12 @@ async function listenAccountLoop(account, opts) {
       }
     }
   }
+  runtime.accounts[account.accountId].listenState = "stopped";
+  await notifyLifecycle(account, "stop");
 }
 
 async function startListenLoop(opts) {
+  syncStandaloneEnv();
   await ensureState(stateDir);
   const accounts = await listAccounts(stateDir);
   if (!accounts.length) {
@@ -474,16 +518,49 @@ async function startListenLoop(opts) {
   }
 }
 
+async function shutdown(signal) {
+  if (shutdownPromise) return await shutdownPromise;
+  shutdownPromise = (async () => {
+    stopRequested = true;
+    runtime.listenState = "stopping";
+    await appendLog(stateDir, `shutdown signal=${signal}`);
+    if (httpServer) {
+      await new Promise<void>((resolve) => {
+        httpServer?.close(() => resolve());
+      });
+      httpServer = null;
+    }
+    runtime.listenState = "stopped";
+  })();
+  return await shutdownPromise;
+}
+
+function installSignalHandlers() {
+  const handle = (signal) => {
+    shutdown(signal)
+      .catch((err) => {
+        console.error(`shutdown failed (${signal}):`, err);
+      })
+      .finally(() => {
+        process.exit(0);
+      });
+  };
+  process.once("SIGINT", handle);
+  process.once("SIGTERM", handle);
+}
+
 async function main() {
   const args = process.argv.slice(2);
   if (args.includes("--help") || args.includes("-h")) return usage();
 
+  syncStandaloneEnv();
   runtime.listenEnabled = !args.includes("--no-listen");
   runtime.codex = args.includes("--codex");
   runtime.write = args.includes("--write");
   const autoReply = args.includes("--auto-reply") || runtime.codex;
 
   await ensureState(stateDir);
+  installSignalHandlers();
   await startHttpServer();
 
   if (runtime.listenEnabled) {

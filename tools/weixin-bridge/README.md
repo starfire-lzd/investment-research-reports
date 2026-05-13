@@ -28,6 +28,13 @@ npm run service:install
 npm run service:status
 ```
 
+说明：
+
+- `npm run login`：扫码登录，保存独立运行所需的微信账号状态。
+- `npm run listen`：启动本地轮询，接收消息并写入 `state/inbox/`。
+- `npm run server`：启动 HTTP 服务；消息发送统一走 HTTP API，不再提供命令行发送入口。
+- `npm run service:install` / `npm run service:status`：管理 macOS `launchd` 后台服务。
+
 ## 构建
 
 ```bash
@@ -43,3 +50,140 @@ npm run build
 npm run weixin:status
 ./scripts/start-weixin-service.sh
 ```
+
+## HTTP 服务
+
+启动：
+
+```bash
+cd tools/weixin-bridge
+npm run server
+```
+
+默认监听地址：
+
+- `http://127.0.0.1:8787`
+
+常用接口：
+
+- `GET /health`
+- `GET /status`
+- `GET /accounts`
+- `GET /contacts`
+- `GET /inbox?limit=50&since=ISO`
+- `POST /send`
+- `POST /send/markdown`
+- `POST /send/batch`
+- `POST /send/media`
+
+## 发送模式
+
+### 主动发送
+
+主动发送是默认模式。
+
+- 默认 `reply = false`
+- 不读取、不使用本地缓存的 `context_token`
+- 适合你当前 bridge 的常规业务场景
+
+请求体示例：
+
+```json
+{
+  "message": "你好，这是主动发送"
+}
+```
+
+返回特征：
+
+- `reply: false`
+- `hasContextToken: false`
+- `usedContextToken: false`
+
+### 回复发送
+
+回复发送需要显式指定 `reply = true`。
+
+- 只在明确需要“沿用最近会话上下文”时使用
+- 会读取当前目标用户最近一次入站消息对应的 `context_token`
+- 如果本地没有可用上下文，`hasContextToken` 会是 `false`
+
+请求体示例：
+
+```json
+{
+  "message": "你好，这是回复发送",
+  "reply": true
+}
+```
+
+返回特征：
+
+- `reply: true`
+- `hasContextToken: true`
+- `usedContextToken: true`
+
+## HTTP 示例
+
+### 主动发送文本
+
+```bash
+curl -X POST http://127.0.0.1:8787/send \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "message": "你好，这是主动发送"
+  }'
+```
+
+### 回复发送文本
+
+```bash
+curl -X POST http://127.0.0.1:8787/send \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "message": "你好，这是回复发送",
+    "reply": true
+  }'
+```
+
+### 主动发送 Markdown
+
+```bash
+curl -X POST http://127.0.0.1:8787/send/markdown \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "message": "# 标题\n\n这是主动发送的 Markdown"
+  }'
+```
+
+### 主动发送媒体
+
+```bash
+curl -X POST http://127.0.0.1:8787/send/media \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "message": "这是一张图片",
+    "filePath": "/absolute/path/to/file.png"
+  }'
+```
+
+### 指定账号发送
+
+```bash
+curl -X POST http://127.0.0.1:8787/send \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "account": "your-account-id",
+    "to": "target-user-id@im.wechat",
+    "message": "指定账号主动发送"
+  }'
+```
+
+## 返回字段说明
+
+发送接口返回里，和发送模式最相关的字段有：
+
+- `reply`：本次请求是否按回复语义发送。
+- `hasContextToken`：本地是否拿到了目标用户的上下文令牌。
+- `usedContextToken`：这次发送是否真的带上了上下文令牌。
+- `ackMode`：当前微信接口返回确认模式；`http-only` 表示接口返回 `HTTP 200 {}`，但没有额外业务回执体。

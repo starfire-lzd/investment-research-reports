@@ -10,8 +10,6 @@
     "import-openclaw": "npm run build --silent && node dist/weixin-bridge.js import-openclaw",
     "status": "npm run build --silent && node dist/weixin-bridge.js status",
     "listen": "npm run build --silent && node dist/weixin-bridge.js listen",
-    "send": "npm run build --silent && node dist/weixin-bridge.js send",
-    "send-media": "npm run build --silent && node dist/weixin-bridge.js send-media",
     "server": "npm run build --silent && node dist/weixin-server.js",
     "service:install": "npm run build --silent && node dist/weixin-service.js install",
     "service:start": "npm run build --silent && node dist/weixin-service.js start",

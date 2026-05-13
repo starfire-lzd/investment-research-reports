@@ -4,8 +4,13 @@ import fsSync from "node:fs";
 import { fileURLToPath } from "node:url";
 import os from "node:os";
 import path from "node:path";
-import { weixinPlugin } from "@tencent-weixin/openclaw-weixin/dist/src/channel.js";
-import { setContextToken as setOpenClawContextToken } from "@tencent-weixin/openclaw-weixin/dist/src/messaging/inbound.js";
+import { getUpdates as getOfficialUpdates } from "@tencent-weixin/openclaw-weixin/dist/src/api/api.js";
+import {
+  uploadFileAttachmentToWeixin,
+  uploadFileToWeixin,
+  uploadVideoToWeixin,
+} from "@tencent-weixin/openclaw-weixin/dist/src/cdn/upload.js";
+import { generateId } from "@tencent-weixin/openclaw-weixin/dist/src/util/random.js";
 import { StreamingMarkdownFilter } from "@tencent-weixin/openclaw-weixin/dist/src/messaging/send.js";
 
 export const apiBaseUrl = "https://ilinkai.weixin.qq.com";
@@ -21,13 +26,6 @@ export const cdnBaseUrl = "https://novac2c.cdn.weixin.qq.com/c2c";
 export const srcDir = path.dirname(fileURLToPath(import.meta.url));
 export const toolDir = path.resolve(srcDir, "..");
 export const projectRoot = path.resolve(toolDir, "..", "..");
-
-const messageItemType = {
-  TEXT: 1,
-  IMAGE: 2,
-  FILE: 4,
-  VIDEO: 5,
-};
 
 type RequestOptions = {
   baseUrl?: string;
@@ -62,6 +60,7 @@ export function getAccountPaths(stateDir, accountId) {
 }
 
 export async function ensureState(stateDir) {
+  syncStandaloneEnv(stateDir);
   const p = getPaths(stateDir);
   await fs.mkdir(p.stateDir, { recursive: true });
   await fs.mkdir(p.inboxDir, { recursive: true });
@@ -71,6 +70,13 @@ export async function appendLog(stateDir, line) {
   await ensureState(stateDir);
   const { logFile } = getPaths(stateDir);
   await fs.appendFile(logFile, `${new Date().toISOString()} ${line}\n`);
+}
+
+function syncStandaloneEnv(stateDir) {
+  // Force official helpers to use the bridge-local state dir instead of ~/.openclaw.
+  process.env.WEIXIN_BRIDGE_STATE = stateDir;
+  process.env.OPENCLAW_STATE_DIR = stateDir;
+  process.env.CLAWDBOT_STATE_DIR = stateDir;
 }
 
 export function randomWechatUin() {
@@ -240,9 +246,6 @@ export async function setContextToken(stateDir, userId, token, account) {
   const tokens = await readJson(contextFile, {});
   tokens[userId] = token;
   await writeJson(contextFile, tokens);
-  if (account?.accountId) {
-    setOpenClawContextToken(account.accountId, userId, token);
-  }
 }
 
 export function textFromItems(items = []) {
@@ -262,32 +265,90 @@ export function filterMarkdown(text) {
   return filter.feed(String(text ?? "")) + filter.flush();
 }
 
-export async function sendMessage({ stateDir, account, to, message, markdown = false }) {
-  const target = to || account.userId;
-  if (!target) throw new Error("缺少目标 userId（账号未提供默认 userId，请显式传 to）");
-  if (!message || !String(message).trim()) throw new Error("message 不能为空");
-  const tokens = await getContextTokens(stateDir, account);
-  const contextToken = getContextTokenForTarget(tokens, target);
-  const clientId = `codex-weixin-${crypto.randomUUID()}`;
-  const text = markdown ? filterMarkdown(message) : String(message);
-  await postJson("ilink/bot/sendmessage", {
+function buildSendTextItem(text) {
+  return { type: 1, text_item: { text } };
+}
+
+function validateWechatSendResponse(response, { label, clientId, to }) {
+  const hasRet = response && typeof response === "object" && "ret" in response;
+  const hasErrCode = response && typeof response === "object" && "errcode" in response;
+  const retCode = hasRet ? Number(response.ret) : 0;
+  const errCode = hasErrCode ? Number(response.errcode) : 0;
+  if ((hasRet && retCode !== 0) || (hasErrCode && errCode !== 0)) {
+    const parts = [
+      `${label} 业务校验失败`,
+      `clientId=${clientId}`,
+      `to=${to}`,
+    ];
+    if (hasRet) parts.push(`ret=${retCode}`);
+    if (hasErrCode) parts.push(`errcode=${errCode}`);
+    if (response?.errmsg) parts.push(`errmsg=${String(response.errmsg).slice(0, 500)}`);
+    const error = Object.assign(new Error(parts.join(" ")), {
+      ret: hasRet ? retCode : undefined,
+      errcode: hasErrCode ? errCode : undefined,
+      errmsg: response?.errmsg,
+      response,
+    });
+    throw error;
+  }
+  return hasRet || hasErrCode ? "business" : "http-only";
+}
+
+async function sendWechatMessageItem({
+  account,
+  to,
+  item,
+  contextToken = undefined,
+  clientId = generateId("openclaw-weixin"),
+  timeoutMs = 15_000,
+}) {
+  const response = await postJson("ilink/bot/sendmessage", {
     msg: {
       from_user_id: "",
-      to_user_id: target,
+      to_user_id: to,
       client_id: clientId,
-      // message_type 必须为 2 (BOT)；填 1 (USER) 会返回 200 但不下发
       message_type: 2,
       message_state: 2,
-      item_list: [{ type: messageItemType.TEXT, text_item: { text } }],
+      item_list: [item],
       context_token: contextToken,
     },
     base_info: baseInfo(),
   }, {
-    baseUrl: account.baseUrl,
+    baseUrl: account.baseUrl || apiBaseUrl,
     token: account.token,
-    timeoutMs: 15_000,
+    timeoutMs,
   });
-  return { clientId, to: target, hasContextToken: Boolean(contextToken) };
+  const ackMode = validateWechatSendResponse(response, {
+    label: "sendmessage",
+    clientId,
+    to,
+  });
+  return { clientId, ackMode, response };
+}
+
+export async function sendMessage({ stateDir, account, to, message, markdown = false, reply = false }) {
+  const target = to || account.userId;
+  if (!target) throw new Error("缺少目标 userId（账号未提供默认 userId，请显式传 to）");
+  if (!message || !String(message).trim()) throw new Error("message 不能为空");
+  const contextToken = reply
+    ? getContextTokenForTarget(await getContextTokens(stateDir, account), target)
+    : undefined;
+  const text = markdown ? filterMarkdown(message) : String(message);
+  syncStandaloneEnv(stateDir);
+  const sent = await sendWechatMessageItem({
+    account,
+    to: target,
+    item: buildSendTextItem(text),
+    contextToken,
+  });
+  return {
+    clientId: sent.clientId,
+    to: target,
+    reply,
+    hasContextToken: Boolean(contextToken),
+    usedContextToken: Boolean(contextToken),
+    ackMode: sent.ackMode,
+  };
 }
 
 
@@ -340,11 +401,12 @@ export async function downloadRemoteMediaToTemp(url, stateDir) {
   await fs.writeFile(filePath, buf);
   return filePath;
 }
-export async function sendMediaMessage({ stateDir, account, to, message = "", mediaUrl, filePath = "", markdown = false }) {
+export async function sendMediaMessage({ stateDir, account, to, message = "", mediaUrl, filePath = "", markdown = false, reply = false }) {
   const target = to || account.userId;
   if (!target) throw new Error("缺少目标 userId（账号未提供默认 userId，请显式传 to）");
-  const tokens = await getContextTokens(stateDir, account);
-  const contextToken = getContextTokenForTarget(tokens, target);
+  const contextToken = reply
+    ? getContextTokenForTarget(await getContextTokens(stateDir, account), target)
+    : undefined;
   let localPath = filePath || mediaUrl;
   if (!localPath) throw new Error("缺少 mediaUrl 或 filePath");
   if (/^https?:\/\//.test(localPath)) localPath = await downloadRemoteMediaToTemp(localPath, stateDir);
@@ -354,67 +416,135 @@ export async function sendMediaMessage({ stateDir, account, to, message = "", me
 
   const text = markdown ? filterMarkdown(message) : String(message || "");
   const mime = mimeFromFilename(localPath);
-  await ensureOpenClawChannelState(stateDir, account, target, contextToken);
-  const result = await weixinPlugin.outbound.sendMedia({
-    cfg: {},
-    accountId: account.accountId,
+  syncStandaloneEnv(stateDir);
+  const uploadOpts = {
+    baseUrl: account.baseUrl || apiBaseUrl,
+    token: account.token,
+  };
+  let mediaItem;
+  if (mime.startsWith("video/")) {
+    const uploaded = await uploadVideoToWeixin({
+      filePath: localPath,
+      toUserId: target,
+      opts: uploadOpts,
+      cdnBaseUrl,
+    });
+    mediaItem = {
+      type: 5,
+      video_item: {
+        media: {
+          encrypt_query_param: uploaded.downloadEncryptedQueryParam,
+          aes_key: Buffer.from(uploaded.aeskey, "hex").toString("base64"),
+          encrypt_type: 1,
+        },
+        video_size: uploaded.fileSizeCiphertext,
+      },
+    };
+  } else if (mime.startsWith("image/")) {
+    const uploaded = await uploadFileToWeixin({
+      filePath: localPath,
+      toUserId: target,
+      opts: uploadOpts,
+      cdnBaseUrl,
+    });
+    mediaItem = {
+      type: 2,
+      image_item: {
+        media: {
+          encrypt_query_param: uploaded.downloadEncryptedQueryParam,
+          aes_key: Buffer.from(uploaded.aeskey, "hex").toString("base64"),
+          encrypt_type: 1,
+        },
+        mid_size: uploaded.fileSizeCiphertext,
+      },
+    };
+  } else {
+    const uploaded = await uploadFileAttachmentToWeixin({
+      filePath: localPath,
+      fileName: path.basename(localPath),
+      toUserId: target,
+      opts: uploadOpts,
+      cdnBaseUrl,
+    });
+    mediaItem = {
+      type: 4,
+      file_item: {
+        media: {
+          encrypt_query_param: uploaded.downloadEncryptedQueryParam,
+          aes_key: Buffer.from(uploaded.aeskey, "hex").toString("base64"),
+          encrypt_type: 1,
+        },
+        file_name: path.basename(localPath),
+        len: String(uploaded.fileSize),
+      },
+    };
+  }
+  const sentItems = [];
+  if (text) {
+    sentItems.push(await sendWechatMessageItem({
+      account,
+      to: target,
+      item: buildSendTextItem(text),
+      contextToken,
+    }));
+  }
+  sentItems.push(await sendWechatMessageItem({
+    account,
     to: target,
-    text,
-    mediaUrl: localPath,
-  });
+    item: mediaItem,
+    contextToken,
+  }));
+  const result = sentItems.at(-1);
   return {
-    clientId: result.messageId,
-    clientIds: [result.messageId],
+    clientId: result.clientId,
+    clientIds: sentItems.map((item) => item.clientId),
     to: target,
+    reply,
     hasContextToken: Boolean(contextToken),
+    usedContextToken: Boolean(contextToken),
     mediaType: mime,
+    ackMode: sentItems.every((item) => item.ackMode === "business") ? "business" : "http-only",
+    ackModes: sentItems.map((item) => item.ackMode),
   };
 }
 
-async function ensureOpenClawChannelState(stateDir, account, target, contextToken) {
-  process.env.OPENCLAW_STATE_DIR = stateDir;
-  const channelDir = path.join(stateDir, "openclaw-weixin");
-  const accountsDir = path.join(channelDir, "accounts");
-  await fs.mkdir(accountsDir, { recursive: true });
-  await writeJson(path.join(channelDir, "accounts.json"), [account.accountId], 0o600);
-  await writeJson(path.join(accountsDir, `${account.accountId}.json`), {
-    token: account.token,
-    baseUrl: account.baseUrl || apiBaseUrl,
-    userId: account.userId,
-    savedAt: account.savedAt || new Date().toISOString(),
-  }, 0o600);
-  if (contextToken) {
-    await writeJson(path.join(accountsDir, `${account.accountId}.context-tokens.json`), {
-      [target]: contextToken,
-    }, 0o600);
-    setOpenClawContextToken(account.accountId, target, contextToken);
-  }
-}
-
 export async function getUpdates(stateDir, account, timeoutMs = defaultLongPollTimeoutMs) {
+  syncStandaloneEnv(stateDir);
   const { syncFile } = account?.accountId ? getAccountPaths(stateDir, account.accountId) : getPaths(stateDir);
   const sync = await readJson(syncFile, { get_updates_buf: "" });
-  let resp;
-  try {
-    resp = await postJson("ilink/bot/getupdates", {
-      get_updates_buf: sync.get_updates_buf || "",
-      base_info: baseInfo(),
-    }, {
-      baseUrl: account.baseUrl,
-      token: account.token,
-      timeoutMs,
+  const resp = await getOfficialUpdates({
+    baseUrl: account.baseUrl || apiBaseUrl,
+    token: account.token,
+    get_updates_buf: sync.get_updates_buf || "",
+    timeoutMs,
+  });
+  const nextTimeoutMs =
+    Number.isFinite(resp.longpolling_timeout_ms) && resp.longpolling_timeout_ms > 0
+      ? resp.longpolling_timeout_ms
+      : timeoutMs;
+  const retCode = Number(resp.ret || 0);
+  const errCode = Number(resp.errcode || 0);
+  if (retCode !== 0 || errCode !== 0) {
+    const parts = [
+      "微信轮询失败",
+      `ret=${retCode}`,
+      `errcode=${errCode}`,
+    ];
+    if (resp.errmsg) parts.push(`errmsg=${String(resp.errmsg).slice(0, 500)}`);
+    const error = Object.assign(new Error(parts.join(" ")), {
+      ret: retCode,
+      errcode: errCode,
+      errmsg: resp.errmsg,
+      nextTimeoutMs,
     });
-  } catch (err) {
-    if (err.name === "AbortError") return { messages: [], nextTimeoutMs: timeoutMs };
-    throw err;
+    throw error;
   }
-  if (resp.get_updates_buf) await writeJson(syncFile, { get_updates_buf: resp.get_updates_buf });
+  if (resp.get_updates_buf != null && resp.get_updates_buf !== "") {
+    await writeJson(syncFile, { get_updates_buf: resp.get_updates_buf });
+  }
   return {
-    messages: resp.msgs || [],
-    nextTimeoutMs:
-      Number.isFinite(resp.longpolling_timeout_ms) && resp.longpolling_timeout_ms > 0
-        ? resp.longpolling_timeout_ms
-        : timeoutMs,
+    messages: Array.isArray(resp.msgs) ? resp.msgs : [],
+    nextTimeoutMs,
   };
 }
 

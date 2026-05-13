@@ -15,6 +15,7 @@ const logsDir = path.join(stateDir, "logs");
 const stdoutPath = path.join(logsDir, "service.out.log");
 const stderrPath = path.join(logsDir, "service.err.log");
 const serverPath = path.join(toolDir, "dist", "weixin-server.js");
+const domainTarget = `gui/${process.getuid()}`;
 
 type RunOptions = {
   inherit?: boolean;
@@ -108,7 +109,7 @@ function plist(serverArgs, envVars) {
 ${[nodePath, serverPath, ...serverArgs].map(stringEntry).join("\n")}
   </array>
   <key>WorkingDirectory</key>
-  <string>${xmlEscape(root)}</string>
+  <string>${xmlEscape(toolDir)}</string>
   <key>EnvironmentVariables</key>
   <dict>
 ${envEntries}
@@ -134,9 +135,37 @@ function parseFlagValue(args, name) {
   return undefined;
 }
 
-async function install(args) {
+async function ensureLaunchAgentDirs() {
   await fs.mkdir(path.dirname(plistPath), { recursive: true });
   await fs.mkdir(logsDir, { recursive: true });
+}
+
+async function ensureServerBuilt() {
+  try {
+    await fs.access(serverPath);
+  } catch {
+    throw new Error(`未找到服务入口：${serverPath}。请先在 tools/weixin-bridge 下执行 npm run build。`);
+  }
+}
+
+function serviceTarget() {
+  return `${domainTarget}/${label}`;
+}
+
+function isLoaded() {
+  const result = run("launchctl", ["print", serviceTarget()], { allowFailure: true });
+  return result.status === 0;
+}
+
+function bootoutLoadedService() {
+  if (!isLoaded()) return;
+  run("launchctl", ["bootout", serviceTarget()], { allowFailure: true });
+}
+
+async function install(args) {
+  await ensureLaunchAgentDirs();
+  await ensureServerBuilt();
+  const nodePath = resolveNodePath();
 
   const serverArgs = [];
   if (args.includes("--codex")) serverArgs.push("--codex");
@@ -148,32 +177,46 @@ async function install(args) {
   const token = parseFlagValue(args, "--token");
 
   const envVars = {
+    WEIXIN_BRIDGE_STANDALONE: "1",
     WEIXIN_BRIDGE_STATE: stateDir,
     OPENCLAW_STATE_DIR: stateDir,
-    WEIXIN_API_PORT: port,
-    WEIXIN_API_HOST: host,
+    CLAWDBOT_STATE_DIR: stateDir,
+    WEIXIN_API_PORT: port || "8787",
+    WEIXIN_API_HOST: host || "127.0.0.1",
     WEIXIN_API_TOKEN: token,
+    WEIXIN_BRIDGE_NODE_PATH: nodePath,
+    HOME: os.homedir(),
     PATH: process.env.PATH || "/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin",
+    LANG: process.env.LANG || "en_US.UTF-8",
   };
 
-  const nodePath = resolveNodePath();
   const nodeVersion = nodeVersionOf(nodePath);
+  bootoutLoadedService();
   await fs.writeFile(plistPath, plist(serverArgs, envVars), "utf8");
   console.log(`Installed ${plistPath}`);
   console.log(`Node: ${nodePath}${nodeVersion ? ` (${nodeVersion})` : ""}`);
   console.log(`Server flags: ${serverArgs.join(" ") || "(默认)"}`);
-  console.log(`Env: WEIXIN_API_HOST=${host || "127.0.0.1"} WEIXIN_API_PORT=${port || 8787} WEIXIN_API_TOKEN=${token ? "<set>" : "<none>"}`);
+  console.log(`Env: WEIXIN_API_HOST=${host || "127.0.0.1"} WEIXIN_API_PORT=${port || 8787} WEIXIN_API_TOKEN=${token ? "<set>" : "<none>"} WEIXIN_BRIDGE_STATE=${stateDir}`);
   await start();
 }
 
 async function start() {
-  run("launchctl", ["bootstrap", `gui/${process.getuid()}`, plistPath], { allowFailure: true });
-  run("launchctl", ["kickstart", "-k", `gui/${process.getuid()}/${label}`], { allowFailure: true });
+  await ensureLaunchAgentDirs();
+  await ensureServerBuilt();
+  try {
+    await fs.access(plistPath);
+  } catch {
+    throw new Error(`未找到服务配置：${plistPath}。请先执行 install。`);
+  }
+  bootoutLoadedService();
+  run("launchctl", ["bootstrap", domainTarget, plistPath], { allowFailure: true });
+  run("launchctl", ["enable", serviceTarget()], { allowFailure: true });
+  run("launchctl", ["kickstart", "-k", serviceTarget()], { allowFailure: true });
   console.log("Started weixin bridge service.");
 }
 
 async function stop() {
-  run("launchctl", ["bootout", `gui/${process.getuid()}/${label}`], { allowFailure: true });
+  bootoutLoadedService();
   console.log("Stopped weixin bridge service.");
 }
 
@@ -183,12 +226,15 @@ async function restart() {
 }
 
 async function status() {
-  const result = run("launchctl", ["print", `gui/${process.getuid()}/${label}`], { allowFailure: true });
+  const result = run("launchctl", ["print", serviceTarget()], { allowFailure: true });
   if (result.status === 0) {
     console.log(result.stdout.trim());
   } else {
     console.log("Service is not loaded.");
   }
+  console.log(`plist: ${plistPath}`);
+  console.log(`server: ${serverPath}`);
+  console.log(`state: ${stateDir}`);
   console.log(`stdout: ${stdoutPath}`);
   console.log(`stderr: ${stderrPath}`);
 }

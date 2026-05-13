@@ -4,29 +4,30 @@ import fsSync from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
-import qrcode from "qrcode-terminal";
+import {
+  DEFAULT_ILINK_BOT_TYPE,
+  displayQRCode,
+  startWeixinLoginWithQr,
+  waitForWeixinLogin,
+} from "@tencent-weixin/openclaw-weixin/dist/src/auth/login-qr.js";
 
 import {
   apiBaseUrl,
-  defaultBotType,
   defaultLongPollTimeoutMs,
   maxConsecutiveFailures,
   backoffDelayMs,
   retryDelayMs,
   appendLog,
   ensureState,
-  getJson,
   getAccountPaths,
   getPaths,
   getStateDir,
   getUpdates,
   loadDefaultAccount,
   normalizeAccountId,
-  postJson,
   projectRoot,
   resolveAccount,
   saveAccount,
-  sendMediaMessage,
   sendMessage,
   setContextToken,
   sleep,
@@ -44,15 +45,13 @@ function usage() {
   node dist/weixin-bridge.js login
   node dist/weixin-bridge.js import-openclaw
   node dist/weixin-bridge.js status
-  node dist/weixin-bridge.js listen [--codex] [--write] [--once]
-  node dist/weixin-bridge.js send --message "text" [--to user@im.wechat]
-  node dist/weixin-bridge.js send-media --media-url <url-or-path> [--message "caption"]
+  node dist/weixin-bridge.js listen [--account ACCOUNT_ID] [--codex] [--write] [--once]
 
 Notes:
   - Default listen mode is local command mode.
   - --codex routes inbound messages to codex exec in read-only sandbox.
   - --write changes Codex sandbox to workspace-write.
-  - For HTTP API usage prefer node dist/weixin-server.js.`);
+  - 发送消息仅支持 HTTP API（node dist/weixin-server.js）。`);
 }
 
 function argValue(args, name) {
@@ -62,58 +61,51 @@ function argValue(args, name) {
   return eq ? eq.slice(name.length + 1) : undefined;
 }
 
+function syncStandaloneEnv() {
+  process.env.WEIXIN_BRIDGE_STATE = stateDir;
+  process.env.OPENCLAW_STATE_DIR = stateDir;
+  process.env.CLAWDBOT_STATE_DIR = stateDir;
+}
+
 async function login(args = []) {
   await ensureState(stateDir);
-  const qr = await postJson(`ilink/bot/get_bot_qrcode?bot_type=${encodeURIComponent(defaultBotType)}`, {
-    local_token_list: [],
+  syncStandaloneEnv();
+  const botType = argValue(args, "--bot-type") || DEFAULT_ILINK_BOT_TYPE;
+  const started = await startWeixinLoginWithQr({
+    apiBaseUrl,
+    botType,
   });
-  if (!qr.qrcode || !qr.qrcode_img_content) {
-    throw new Error(`二维码响应异常：${JSON.stringify(qr)}`);
+  if (!started?.qrcodeUrl || !started?.sessionKey) {
+    throw new Error(`二维码响应异常：${started?.message || "未返回二维码"}`);
   }
-
   console.log("请用手机微信扫描二维码：");
-  qrcode.generate(qr.qrcode_img_content, { small: true });
-  console.log(qr.qrcode_img_content);
-
-  const start = Date.now();
-  let baseUrl = apiBaseUrl;
-  while (Date.now() - start < 5 * 60_000) {
-    const status = await getJson(`ilink/bot/get_qrcode_status?qrcode=${encodeURIComponent(qr.qrcode)}`, {
-      baseUrl,
-      timeoutMs: 35_000,
-    }).catch((err) => {
-      if (err.name === "AbortError") return { status: "wait" };
-      throw err;
-    });
-    if (status.status === "scaned") {
-      console.log("已扫码，等待手机确认...");
-      continue;
-    }
-    if (status.status === "scaned_but_redirect" && status.redirect_host) {
-      baseUrl = status.redirect_host.startsWith("http") ? status.redirect_host : `https://${status.redirect_host}`;
-      console.log(`切换到重定向节点：${baseUrl}`);
-      continue;
-    }
-    if (status.status === "confirmed" || status.bot_token) {
-      const accountId = normalizeAccountId(status.ilink_bot_id || "default@im.bot");
-      const account = {
-        accountId,
-        name: argValue(args, "--account-name"),
-        token: status.bot_token,
-        baseUrl: status.baseurl || baseUrl,
-        userId: status.ilink_user_id,
-        savedAt: new Date().toISOString(),
-      };
-      await saveAccount(stateDir, account, { makeDefault: args.includes("--default") });
-      console.log(`登录成功：${accountId}`);
-      if (account.name) console.log(`账号名：${account.name}`);
-      if (account.userId) console.log(`扫码用户：${account.userId}`);
-      return;
-    }
-    if (status.status === "expired") throw new Error("二维码已过期。");
-    await sleep(1200);
+  await displayQRCode(started.qrcodeUrl);
+  const result = await waitForWeixinLogin({
+    sessionKey: started.sessionKey,
+    apiBaseUrl,
+    botType,
+    timeoutMs: 5 * 60_000,
+  });
+  if (result.alreadyConnected) {
+    console.log(result.message);
+    return;
   }
-  throw new Error("等待扫码超时。");
+  if (!result.connected || !result.botToken) {
+    throw new Error(result.message || "等待扫码超时。");
+  }
+  const accountId = normalizeAccountId(result.accountId || "default@im.bot");
+  const account = {
+    accountId,
+    name: argValue(args, "--account-name"),
+    token: result.botToken,
+    baseUrl: result.baseUrl || apiBaseUrl,
+    userId: result.userId,
+    savedAt: new Date().toISOString(),
+  };
+  await saveAccount(stateDir, account, { makeDefault: args.includes("--default") });
+  console.log(`登录成功：${accountId}`);
+  if (account.name) console.log(`账号名：${account.name}`);
+  if (account.userId) console.log(`扫码用户：${account.userId}`);
 }
 
 async function importOpenClaw() {
@@ -196,9 +188,10 @@ async function runCodex(text, opts) {
 
 async function listen(opts) {
   await ensureState(stateDir);
-  const account = await resolveAccount(stateDir);
+  syncStandaloneEnv();
+  const account = await resolveAccount(stateDir, opts.accountId);
   await writeJson(paths.accountFile, account);
-  console.log(`listening account=${account.accountId} baseUrl=${account.baseUrl}`);
+  console.log(`standalone listen account=${account.accountId} baseUrl=${account.baseUrl}`);
   await appendLog(stateDir, `listen start account=${account.accountId} codex=${opts.codex} write=${opts.write}`);
 
   let nextTimeoutMs = defaultLongPollTimeoutMs;
@@ -267,36 +260,12 @@ async function main() {
       });
       return;
     }
-    if (cmd === "send") {
-      const message = argValue(args, "--message") || args.join(" ").trim();
-      const to = argValue(args, "--to");
-      const accountId = argValue(args, "--account");
-      if (!message) throw new Error("缺少消息内容。");
-      const account = await resolveAccount(stateDir, accountId);
-      const result = await sendMessage({ stateDir, account, to, message, markdown: args.includes("--markdown") });
-      console.log(`sent ${result.clientId} -> ${result.to}`);
-      return;
-    }
-    if (cmd === "send-media") {
-      const message = argValue(args, "--message") || "";
-      const to = argValue(args, "--to");
-      const accountId = argValue(args, "--account");
-      const mediaUrl = argValue(args, "--media-url") || argValue(args, "--file");
-      if (!mediaUrl) throw new Error("缺少 --media-url 或 --file");
-      const account = await resolveAccount(stateDir, accountId);
-      const result = await sendMediaMessage({
-        stateDir,
-        account,
-        to,
-        message,
-        mediaUrl,
-        markdown: args.includes("--markdown"),
-      });
-      console.log(`sent media ${result.clientId} -> ${result.to} (${result.mediaType})`);
-      return;
+    if (cmd === "send" || cmd === "send-media") {
+      throw new Error("CLI 发送已禁用，请改用 HTTP API：POST /send、/send/markdown、/send/batch、/send/media");
     }
     if (cmd === "listen") {
       return await listen({
+        accountId: argValue(args, "--account"),
         codex: args.includes("--codex"),
         write: args.includes("--write"),
         once: args.includes("--once"),
