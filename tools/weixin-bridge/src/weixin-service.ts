@@ -14,7 +14,7 @@ const stateDir = path.join(toolDir, "state");
 const logsDir = path.join(stateDir, "logs");
 const stdoutPath = path.join(logsDir, "service.out.log");
 const stderrPath = path.join(logsDir, "service.err.log");
-const serverPath = path.join(toolDir, "dist", "weixin-server.js");
+const serverPath = path.join(toolDir, "dist", "index.js");
 const domainTarget = `gui/${process.getuid()}`;
 
 type RunOptions = {
@@ -24,15 +24,15 @@ type RunOptions = {
 
 function usage() {
   console.log(`Usage:
-  node dist/weixin-service.js install [--codex] [--write] [--no-listen] [--port=N] [--host=H] [--token=T]
-  node dist/weixin-service.js start
-  node dist/weixin-service.js stop
-  node dist/weixin-service.js restart
-  node dist/weixin-service.js status
-  node dist/weixin-service.js uninstall
+  node dist/index.js service install [--codex] [--write] [--no-listen] [--port=N] [--host=H] [--token=T]
+  node dist/index.js service start
+  node dist/index.js service stop
+  node dist/index.js service restart
+  node dist/index.js service status
+  node dist/index.js service uninstall
 
 Notes:
-  - 安装的是 HTTP 服务（dist/weixin-server.js）。
+  - 安装的是 HTTP 服务（dist/index.js server）。
   - 默认监听 127.0.0.1:8787，同进程包含微信长轮询监听。
   - --codex 会在收到入站消息时调 codex 自动回复；不加该参数则只收入到 inbox。`);
 }
@@ -106,7 +106,7 @@ function plist(serverArgs, envVars) {
   <string>${label}</string>
   <key>ProgramArguments</key>
   <array>
-${[nodePath, serverPath, ...serverArgs].map(stringEntry).join("\n")}
+${[nodePath, serverPath, "server", ...serverArgs].map(stringEntry).join("\n")}
   </array>
   <key>WorkingDirectory</key>
   <string>${xmlEscape(toolDir)}</string>
@@ -245,8 +245,8 @@ async function uninstall() {
   console.log(`Removed ${plistPath}`);
 }
 
-async function main() {
-  const [cmd, ...args] = process.argv.slice(2);
+export async function mainService(argv = process.argv.slice(2)) {
+  const [cmd, ...args] = argv;
   try {
     if (!cmd || cmd === "--help" || cmd === "help") return usage();
     if (cmd === "install") return await install(args);
@@ -261,5 +261,3 @@ async function main() {
     process.exitCode = 1;
   }
 }
-
-await main();

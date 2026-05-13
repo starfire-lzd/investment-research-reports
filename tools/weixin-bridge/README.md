@@ -5,7 +5,7 @@
 ## 目录说明
 
 - `src/`：TypeScript 源码。
-- `dist/`：编译产物，由 `npm run build` 生成。
+- `dist/`：编译产物，由 `npm run build` 生成，最终收敛为单文件 `dist/index.js`。
 - `stubs/openclaw/`：桥接工具内置的 `openclaw` 兼容依赖，不再依赖仓库外部 stub。
 - `state/`：本地运行状态、日志、收件箱、临时文件，不提交到 Git。
 
@@ -41,6 +41,11 @@ npm run service:status
 cd tools/weixin-bridge
 npm run build
 ```
+
+构建结果：
+
+- 单文件入口：`dist/index.js`
+- 常用直调形式：`node dist/index.js login`、`node dist/index.js server`、`node dist/index.js service status`
 
 ## 从根仓库调用
 

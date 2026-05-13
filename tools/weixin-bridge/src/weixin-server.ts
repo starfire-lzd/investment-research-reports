@@ -43,7 +43,7 @@ let shutdownPromise: Promise<void> | null = null;
 
 function usage() {
   console.log(`Usage:
-  node dist/weixin-server.js [--no-listen] [--codex] [--write]
+  node dist/index.js server [--no-listen] [--codex] [--write]
 
 Env:
   WEIXIN_API_PORT   监听端口，默认 8787
@@ -147,35 +147,40 @@ async function readBody(req, { maxBytes = 1 << 20 } = {}) {
   });
 }
 
-function publicAccount(a) {
+function isAccountOnline(a) {
+  const listenState = runtime.accounts?.[a?.accountId]?.listenState;
+  return runtime.listenEnabled && (listenState === "idle" || listenState === "polling");
+}
+
+function publicAccount(a, defaultAccountId) {
   if (!a) return null;
   return {
-    accountId: a.accountId,
-    name: a.name,
-    userId: a.userId,
-    baseUrl: a.baseUrl,
-    savedAt: a.savedAt,
-    source: a._source,
+    alias: a.alias,
+    online: isAccountOnline(a),
+    default: a.accountId === defaultAccountId,
   };
 }
 
 async function handleStatus(_req, res) {
   const accounts = await listAccounts(stateDir).catch(() => []);
+  const defaultAccountId = (accounts.find((a) => a._source === "default") || accounts[0])?.accountId;
   sendJson(res, 200, {
     ok: true,
     startedAt,
     runtime,
     stateDir,
     accountCount: accounts.length,
-    defaultAccount: publicAccount(accounts[0]),
+    accounts: accounts.map((account) => publicAccount(account, defaultAccountId)),
   });
 }
 
 async function handleAccounts(_req, res) {
   const accounts = await listAccounts(stateDir);
+  const defaultAccountId = (accounts.find((a) => a._source === "default") || accounts[0])?.accountId;
   sendJson(res, 200, {
     ok: true,
-    accounts: accounts.map(publicAccount),
+    count: accounts.length,
+    accounts: accounts.map((account) => publicAccount(account, defaultAccountId)),
   });
 }
 
@@ -220,12 +225,41 @@ async function handleInbox(req, res) {
   });
 }
 
-async function doSend({ to, message, account: accountId, markdown = false, reply = false }) {
-  syncStandaloneEnv();
-  if (typeof message !== "string" || !message.trim()) {
-    throw Object.assign(new Error("message 必须为非空字符串"), { statusCode: 400 });
+async function resolveSendText({ message, filePath }) {
+  const inlineMessage = typeof message === "string" ? message : "";
+  if (inlineMessage.trim()) {
+    return inlineMessage;
   }
-  if (message.length > 3500) {
+  const inputPath = typeof filePath === "string" ? filePath.trim() : "";
+  if (!inputPath) {
+    throw Object.assign(new Error("message 和 filePath 不能同时为空"), { statusCode: 400 });
+  }
+  let localPath = inputPath;
+  if (localPath.startsWith("file://")) {
+    localPath = new URL(localPath).pathname;
+  }
+  if (!path.isAbsolute(localPath)) {
+    localPath = path.resolve(root, localPath);
+  }
+  let text;
+  try {
+    text = await fs.readFile(localPath, "utf8");
+  } catch (err) {
+    throw Object.assign(
+      new Error(`filePath 读取失败：${localPath} ${String(err.message || err).slice(0, 300)}`),
+      { statusCode: 400 },
+    );
+  }
+  if (!text.trim()) {
+    throw Object.assign(new Error(`filePath 内容为空：${localPath}`), { statusCode: 400 });
+  }
+  return text;
+}
+
+async function doSend({ to, message, filePath, account: accountId, markdown = false, reply = false }) {
+  syncStandaloneEnv();
+  const text = await resolveSendText({ message, filePath });
+  if (text.length > 3500) {
     throw Object.assign(new Error("message 超长（>3500 字符）"), { statusCode: 400 });
   }
   let account;
@@ -234,7 +268,7 @@ async function doSend({ to, message, account: accountId, markdown = false, reply
   } catch (err) {
     throw Object.assign(new Error(err.message), { statusCode: 404 });
   }
-  const result = await sendMessage({ stateDir, account, to, message, markdown, reply });
+  const result = await sendMessage({ stateDir, account, to, message: text, markdown, reply });
   runtime.outboundCount += 1;
   await appendLog(
     stateDir,
@@ -560,8 +594,8 @@ function installSignalHandlers() {
   process.once("SIGTERM", handle);
 }
 
-async function main() {
-  const args = process.argv.slice(2);
+export async function mainServer(argv = process.argv.slice(2)) {
+  const args = argv;
   if (args.includes("--help") || args.includes("-h")) return usage();
 
   syncStandaloneEnv();
@@ -584,5 +618,3 @@ async function main() {
     console.log("listen loop disabled (--no-listen); inbound messages will NOT be collected.");
   }
 }
-
-await main();

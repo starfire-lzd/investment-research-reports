@@ -43,16 +43,16 @@ const paths = getPaths(stateDir);
 
 function usage() {
   console.log(`Usage:
-  node dist/weixin-bridge.js login --alias ACCOUNT_ALIAS [--default]
-  node dist/weixin-bridge.js import-openclaw --alias ACCOUNT_ALIAS [--default]
-  node dist/weixin-bridge.js status
-  node dist/weixin-bridge.js listen [--account ACCOUNT_ALIAS|default] [--codex] [--write] [--once]
+  node dist/index.js login --alias ACCOUNT_ALIAS [--default]
+  node dist/index.js import-openclaw --alias ACCOUNT_ALIAS [--default]
+  node dist/index.js status
+  node dist/index.js listen [--account ACCOUNT_ALIAS|default] [--codex] [--write] [--once]
 
 Notes:
   - Default listen mode is local command mode.
   - --codex routes inbound messages to codex exec in read-only sandbox.
   - --write changes Codex sandbox to workspace-write.
-  - 发送消息仅支持 HTTP API（node dist/weixin-server.js）。`);
+  - 发送消息仅支持 HTTP API（node dist/index.js server）。`);
 }
 
 function argValue(args, name) {
@@ -260,8 +260,8 @@ async function listen(opts) {
   }
 }
 
-async function main() {
-  const [cmd, ...args] = process.argv.slice(2);
+export async function mainBridge(argv = process.argv.slice(2)) {
+  const [cmd, ...args] = argv;
   try {
     if (!cmd || cmd === "help" || cmd === "--help") return usage();
     if (cmd === "login") return await login(args);
@@ -295,5 +295,3 @@ async function main() {
     process.exitCode = 1;
   }
 }
-
-await main();

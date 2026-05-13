@@ -4,19 +4,19 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "rm -rf dist && esbuild src/index.ts --bundle --platform=node --format=esm --target=node22 --outfile=dist/index.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "login": "npm run build --silent && node dist/weixin-bridge.js login",
-    "import-openclaw": "npm run build --silent && node dist/weixin-bridge.js import-openclaw",
-    "status": "npm run build --silent && node dist/weixin-bridge.js status",
-    "listen": "npm run build --silent && node dist/weixin-bridge.js listen",
-    "server": "npm run build --silent && node dist/weixin-server.js",
-    "service:install": "npm run build --silent && node dist/weixin-service.js install",
-    "service:start": "npm run build --silent && node dist/weixin-service.js start",
-    "service:stop": "npm run build --silent && node dist/weixin-service.js stop",
-    "service:restart": "npm run build --silent && node dist/weixin-service.js restart",
-    "service:status": "npm run build --silent && node dist/weixin-service.js status",
-    "service:uninstall": "npm run build --silent && node dist/weixin-service.js uninstall"
+    "login": "npm run build --silent && node dist/index.js login",
+    "import-openclaw": "npm run build --silent && node dist/index.js import-openclaw",
+    "status": "npm run build --silent && node dist/index.js status",
+    "listen": "npm run build --silent && node dist/index.js listen",
+    "server": "npm run build --silent && node dist/index.js server",
+    "service:install": "npm run build --silent && node dist/index.js service install",
+    "service:start": "npm run build --silent && node dist/index.js service start",
+    "service:stop": "npm run build --silent && node dist/index.js service stop",
+    "service:restart": "npm run build --silent && node dist/index.js service restart",
+    "service:status": "npm run build --silent && node dist/index.js service status",
+    "service:uninstall": "npm run build --silent && node dist/index.js service uninstall"
   },
   "dependencies": {
     "@tencent-weixin/openclaw-weixin": "^2.4.3",
@@ -25,6 +25,7 @@
   },
   "devDependencies": {
     "@types/node": "^22.15.18",
+    "esbuild": "^0.25.4",
     "typescript": "^5.6.3"
   }
 }
