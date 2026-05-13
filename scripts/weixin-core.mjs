@@ -3,7 +3,8 @@ import fs from "node:fs/promises";
 import fsSync from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { sendWeixinMediaFile } from "@tencent-weixin/openclaw-weixin/dist/src/messaging/send-media.js";
+import { weixinPlugin } from "@tencent-weixin/openclaw-weixin/dist/src/channel.js";
+import { setContextToken as setOpenClawContextToken } from "@tencent-weixin/openclaw-weixin/dist/src/messaging/inbound.js";
 import { StreamingMarkdownFilter } from "@tencent-weixin/openclaw-weixin/dist/src/messaging/send.js";
 
 export const apiBaseUrl = "https://ilinkai.weixin.qq.com";
@@ -235,6 +236,9 @@ export async function setContextToken(stateDir, userId, token, account) {
   const tokens = await readJson(contextFile, {});
   tokens[userId] = token;
   await writeJson(contextFile, tokens);
+  if (account?.accountId) {
+    setOpenClawContextToken(account.accountId, userId, token);
+  }
 }
 
 export function textFromItems(items = []) {
@@ -447,12 +451,13 @@ export async function sendMediaMessage({ stateDir, account, to, message = "", me
 
   const text = markdown ? filterMarkdown(message) : String(message || "");
   const mime = mimeFromFilename(localPath);
-  const result = await sendWeixinMediaFile({
-    filePath: localPath,
+  await ensureOpenClawChannelState(stateDir, account, target, contextToken);
+  const result = await weixinPlugin.outbound.sendMedia({
+    cfg: {},
+    accountId: account.accountId,
     to: target,
     text,
-    opts: { baseUrl: account.baseUrl, token: account.token, contextToken },
-    cdnBaseUrl,
+    mediaUrl: localPath,
   });
   return {
     clientId: result.messageId,
@@ -461,6 +466,26 @@ export async function sendMediaMessage({ stateDir, account, to, message = "", me
     hasContextToken: Boolean(contextToken),
     mediaType: mime,
   };
+}
+
+async function ensureOpenClawChannelState(stateDir, account, target, contextToken) {
+  process.env.OPENCLAW_STATE_DIR = stateDir;
+  const channelDir = path.join(stateDir, "openclaw-weixin");
+  const accountsDir = path.join(channelDir, "accounts");
+  await fs.mkdir(accountsDir, { recursive: true });
+  await writeJson(path.join(channelDir, "accounts.json"), [account.accountId], 0o600);
+  await writeJson(path.join(accountsDir, `${account.accountId}.json`), {
+    token: account.token,
+    baseUrl: account.baseUrl || apiBaseUrl,
+    userId: account.userId,
+    savedAt: account.savedAt || new Date().toISOString(),
+  }, 0o600);
+  if (contextToken) {
+    await writeJson(path.join(accountsDir, `${account.accountId}.context-tokens.json`), {
+      [target]: contextToken,
+    }, 0o600);
+    setOpenClawContextToken(account.accountId, target, contextToken);
+  }
 }
 
 export async function getUpdates(stateDir, account, timeoutMs = defaultLongPollTimeoutMs) {

@@ -5,6 +5,8 @@
   "exports": {
     "./plugin-sdk/infra-runtime": "./plugin-sdk/infra-runtime.js",
     "./plugin-sdk/account-id": "./plugin-sdk/account-id.js",
-    "./plugin-sdk/config-runtime": "./plugin-sdk/config-runtime.js"
+    "./plugin-sdk/config-runtime": "./plugin-sdk/config-runtime.js",
+    "./plugin-sdk/hook-runtime": "./plugin-sdk/hook-runtime.js",
+    "./plugin-sdk/plugin-runtime": "./plugin-sdk/plugin-runtime.js"
   }
 }

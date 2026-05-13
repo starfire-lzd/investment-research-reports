@@ -111,6 +111,7 @@ async function install(args) {
 
   const envVars = {
     WEIXIN_BRIDGE_STATE: stateDir,
+    OPENCLAW_STATE_DIR: stateDir,
     WEIXIN_API_PORT: port,
     WEIXIN_API_HOST: host,
     WEIXIN_API_TOKEN: token,
