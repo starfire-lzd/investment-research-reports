@@ -286,16 +286,6 @@ export async function sendMessage({ stateDir, account, to, message, markdown = f
   return { clientId, to: target, hasContextToken: Boolean(contextToken) };
 }
 
-function aesEcbPaddedSize(bytes) {
-  const rem = bytes % 16;
-  return bytes + (rem === 0 ? 16 : 16 - rem);
-}
-
-function encryptAesEcb(buffer, aeskey) {
-  const cipher = crypto.createCipheriv("aes-128-ecb", aeskey, null);
-  cipher.setAutoPadding(true);
-  return Buffer.concat([cipher.update(buffer), cipher.final()]);
-}
 
 function contentTypeToExt(contentType, url) {
   const clean = String(contentType || "").split(";")[0].trim().toLowerCase();
@@ -346,97 +336,6 @@ export async function downloadRemoteMediaToTemp(url, stateDir) {
   await fs.writeFile(filePath, buf);
   return filePath;
 }
-
-async function uploadBufferToCdn({ buffer, uploadFullUrl, uploadParam, filekey, aeskey, label }) {
-  const ciphertext = encryptAesEcb(buffer, aeskey);
-  const url = uploadFullUrl?.trim()
-    || (uploadParam ? `${cdnBaseUrl}/upload?encrypted_query_param=${encodeURIComponent(uploadParam)}&filekey=${encodeURIComponent(filekey)}` : "");
-  if (!url) throw new Error(`${label}: getuploadurl 未返回 upload URL`);
-  let lastError;
-  for (let attempt = 1; attempt <= 3; attempt += 1) {
-    try {
-      const res = await fetch(url, {
-        method: "POST",
-        headers: { "Content-Type": "application/octet-stream" },
-        body: new Uint8Array(ciphertext),
-      });
-      if (res.status >= 400 && res.status < 500) {
-        throw new Error(`CDN 上传客户端错误 ${res.status}: ${await res.text()}`);
-      }
-      if (res.status !== 200) throw new Error(`CDN 上传失败 ${res.status}: ${await res.text()}`);
-      const downloadParam = res.headers.get("x-encrypted-param");
-      if (!downloadParam) throw new Error("CDN 响应缺少 x-encrypted-param");
-      return downloadParam;
-    } catch (err) {
-      lastError = err;
-      if (String(err.message || err).includes("客户端错误")) throw err;
-      if (attempt < 3) await sleep(800 * attempt);
-    }
-  }
-  throw lastError;
-}
-
-async function uploadMedia({ account, target, filePath, mediaType }) {
-  const plaintext = await fs.readFile(filePath);
-  const rawsize = plaintext.length;
-  const rawfilemd5 = crypto.createHash("md5").update(plaintext).digest("hex");
-  const filesize = aesEcbPaddedSize(rawsize);
-  const filekey = crypto.randomBytes(16).toString("hex");
-  const aeskey = crypto.randomBytes(16);
-  const resp = await postJson("ilink/bot/getuploadurl", {
-    filekey,
-    media_type: mediaType,
-    to_user_id: target,
-    rawsize,
-    rawfilemd5,
-    filesize,
-    no_need_thumb: true,
-    aeskey: aeskey.toString("hex"),
-    base_info: baseInfo(),
-  }, {
-    baseUrl: account.baseUrl,
-    token: account.token,
-    timeoutMs: 15_000,
-  });
-  const downloadEncryptedQueryParam = await uploadBufferToCdn({
-    buffer: plaintext,
-    uploadFullUrl: resp.upload_full_url,
-    uploadParam: resp.upload_param,
-    filekey,
-    aeskey,
-    label: "uploadMedia",
-  });
-  return {
-    filekey,
-    downloadEncryptedQueryParam,
-    aeskey: aeskey.toString("hex"),
-    aeskeyBase64: aeskey.toString("base64"),
-    fileSize: rawsize,
-    fileSizeCiphertext: filesize,
-  };
-}
-
-async function sendOneItem({ account, target, contextToken, item }) {
-  const clientId = `codex-weixin-${crypto.randomUUID()}`;
-  await postJson("ilink/bot/sendmessage", {
-    msg: {
-      from_user_id: "",
-      to_user_id: target,
-      client_id: clientId,
-      message_type: 2,
-      message_state: 2,
-      item_list: [item],
-      context_token: contextToken,
-    },
-    base_info: baseInfo(),
-  }, {
-    baseUrl: account.baseUrl,
-    token: account.token,
-    timeoutMs: 15_000,
-  });
-  return clientId;
-}
-
 export async function sendMediaMessage({ stateDir, account, to, message = "", mediaUrl, filePath, markdown = false }) {
   const target = to || account.userId;
   if (!target) throw new Error("缺少目标 userId（账号未提供默认 userId，请显式传 to）");
