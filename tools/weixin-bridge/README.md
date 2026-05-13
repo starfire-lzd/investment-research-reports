@@ -6,6 +6,7 @@
 
 - `src/`：TypeScript 源码。
 - `dist/`：编译产物，由 `npm run build` 生成。
+- `stubs/openclaw/`：桥接工具内置的 `openclaw` 兼容依赖，不再依赖仓库外部 stub。
 - `state/`：本地运行状态、日志、收件箱、临时文件，不提交到 Git。
 
 ## 安装依赖
