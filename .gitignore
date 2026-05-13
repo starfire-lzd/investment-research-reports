@@ -4,4 +4,4 @@ node_modules/
 dist/
 .playwright-cli/
 output/playwright/
-.weixin-bridge/
+tools/weixin-bridge/state/

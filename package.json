@@ -4,23 +4,19 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "node scripts/build-site.mjs",
-    "weixin:login": "node scripts/weixin-bridge.mjs login",
-    "weixin:status": "node scripts/weixin-bridge.mjs status",
-    "weixin:listen": "node scripts/weixin-bridge.mjs listen",
-    "weixin:send": "node scripts/weixin-bridge.mjs send",
-    "weixin:send-media": "node scripts/weixin-bridge.mjs send-media",
-    "weixin:server": "node scripts/weixin-server.mjs",
-    "weixin:service:install": "node scripts/weixin-service.mjs install",
-    "weixin:service:start": "node scripts/weixin-service.mjs start",
-    "weixin:service:stop": "node scripts/weixin-service.mjs stop",
-    "weixin:service:restart": "node scripts/weixin-service.mjs restart",
-    "weixin:service:status": "node scripts/weixin-service.mjs status",
-    "weixin:service:uninstall": "node scripts/weixin-service.mjs uninstall"
-  },
-  "dependencies": {
-    "@tencent-weixin/openclaw-weixin": "^2.4.3",
-    "openclaw": "file:stubs/openclaw",
-    "qrcode-terminal": "^0.12.0"
+    "build": "node site/build-site.mjs",
+    "weixin:login": "npm --prefix tools/weixin-bridge run login --",
+    "weixin:import-openclaw": "npm --prefix tools/weixin-bridge run import-openclaw --",
+    "weixin:status": "npm --prefix tools/weixin-bridge run status --",
+    "weixin:listen": "npm --prefix tools/weixin-bridge run listen --",
+    "weixin:send": "npm --prefix tools/weixin-bridge run send --",
+    "weixin:send-media": "npm --prefix tools/weixin-bridge run send-media --",
+    "weixin:server": "npm --prefix tools/weixin-bridge run server --",
+    "weixin:service:install": "npm --prefix tools/weixin-bridge run service:install --",
+    "weixin:service:start": "npm --prefix tools/weixin-bridge run service:start --",
+    "weixin:service:stop": "npm --prefix tools/weixin-bridge run service:stop --",
+    "weixin:service:restart": "npm --prefix tools/weixin-bridge run service:restart --",
+    "weixin:service:status": "npm --prefix tools/weixin-bridge run service:status --",
+    "weixin:service:uninstall": "npm --prefix tools/weixin-bridge run service:uninstall --"
   }
 }

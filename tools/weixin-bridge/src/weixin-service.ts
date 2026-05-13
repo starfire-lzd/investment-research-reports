@@ -1,35 +1,42 @@
 #!/usr/bin/env node
 import fs from "node:fs/promises";
+import { fileURLToPath } from "node:url";
 import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 
-const root = process.cwd();
+const srcDir = path.dirname(fileURLToPath(import.meta.url));
+const toolDir = path.resolve(srcDir, "..");
+const root = path.resolve(toolDir, "..", "..");
 const label = "com.lizhengda.investment-research.weixin-bridge";
 const plistPath = path.join(os.homedir(), "Library", "LaunchAgents", `${label}.plist`);
-const stateDir = path.join(root, ".weixin-bridge");
+const stateDir = path.join(toolDir, "state");
 const logsDir = path.join(stateDir, "logs");
 const stdoutPath = path.join(logsDir, "service.out.log");
 const stderrPath = path.join(logsDir, "service.err.log");
-const nodePath = process.execPath;
-const serverPath = path.join(root, "scripts", "weixin-server.mjs");
+const serverPath = path.join(toolDir, "dist", "weixin-server.js");
+
+type RunOptions = {
+  inherit?: boolean;
+  allowFailure?: boolean;
+};
 
 function usage() {
   console.log(`Usage:
-  node scripts/weixin-service.mjs install [--codex] [--write] [--no-listen] [--port=N] [--host=H] [--token=T]
-  node scripts/weixin-service.mjs start
-  node scripts/weixin-service.mjs stop
-  node scripts/weixin-service.mjs restart
-  node scripts/weixin-service.mjs status
-  node scripts/weixin-service.mjs uninstall
+  node dist/weixin-service.js install [--codex] [--write] [--no-listen] [--port=N] [--host=H] [--token=T]
+  node dist/weixin-service.js start
+  node dist/weixin-service.js stop
+  node dist/weixin-service.js restart
+  node dist/weixin-service.js status
+  node dist/weixin-service.js uninstall
 
 Notes:
-  - 安装的是 HTTP 服务（scripts/weixin-server.mjs）。
+  - 安装的是 HTTP 服务（dist/weixin-server.js）。
   - 默认监听 127.0.0.1:8787，同进程包含微信长轮询监听。
   - --codex 会在收到入站消息时调 codex 自动回复；不加该参数则只收入到 inbox。`);
 }
 
-function run(cmd, args, opts = {}) {
+function run(cmd, args, opts: RunOptions = {}) {
   const result = spawnSync(cmd, args, {
     cwd: root,
     encoding: "utf8",
@@ -40,6 +47,36 @@ function run(cmd, args, opts = {}) {
     throw new Error(`${cmd} ${args.join(" ")} failed${detail ? `:\n${detail}` : ""}`);
   }
   return result;
+}
+
+function nodeMajor(versionText) {
+  const match = String(versionText || "").trim().match(/^v?(\d+)/);
+  return match ? Number(match[1]) : 0;
+}
+
+function nodeVersionOf(binPath) {
+  const result = spawnSync(binPath, ["-v"], {
+    cwd: root,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  if (result.status !== 0) return "";
+  return result.stdout.trim();
+}
+
+function resolveNodePath() {
+  const forced = process.env.WEIXIN_BRIDGE_NODE_PATH?.trim();
+  if (forced) return forced;
+
+  const shellNode = spawnSync("/bin/zsh", ["-lc", "command -v node"], {
+    cwd: root,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+  }).stdout.trim();
+  if (shellNode && nodeMajor(nodeVersionOf(shellNode)) >= 22) return shellNode;
+
+  if (nodeMajor(process.version) >= 22) return process.execPath;
+  return shellNode || process.execPath;
 }
 
 function xmlEscape(value) {
@@ -55,6 +92,7 @@ function stringEntry(value) {
 }
 
 function plist(serverArgs, envVars) {
+  const nodePath = resolveNodePath();
   const envEntries = Object.entries(envVars)
     .filter(([, v]) => v !== undefined && v !== "")
     .map(([k, v]) => `    <key>${xmlEscape(k)}</key>\n    <string>${xmlEscape(String(v))}</string>`)
@@ -118,8 +156,11 @@ async function install(args) {
     PATH: process.env.PATH || "/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin",
   };
 
+  const nodePath = resolveNodePath();
+  const nodeVersion = nodeVersionOf(nodePath);
   await fs.writeFile(plistPath, plist(serverArgs, envVars), "utf8");
   console.log(`Installed ${plistPath}`);
+  console.log(`Node: ${nodePath}${nodeVersion ? ` (${nodeVersion})` : ""}`);
   console.log(`Server flags: ${serverArgs.join(" ") || "(默认)"}`);
   console.log(`Env: WEIXIN_API_HOST=${host || "127.0.0.1"} WEIXIN_API_PORT=${port || 8787} WEIXIN_API_TOKEN=${token ? "<set>" : "<none>"}`);
   await start();

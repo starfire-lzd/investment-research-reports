@@ -29,7 +29,13 @@ npm run build
 
 ## 微信桥接后台服务
 
-微信桥接不依赖 OpenClaw 常驻进程，状态保存在本地 `.weixin-bridge/`，该目录不会提交到 Git。
+微信桥接工具位于 `tools/weixin-bridge/`，不依赖 OpenClaw 常驻进程。运行状态、日志、收件箱和临时文件统一保存在 `tools/weixin-bridge/state/`，该目录不会提交到 Git。
+
+首次拉取后，请先为子项目单独安装依赖：
+
+```bash
+npm --prefix tools/weixin-bridge install
+```
 
 ```bash
 npm run weixin:login
@@ -40,7 +46,13 @@ npm run weixin:service:restart
 npm run weixin:service:uninstall
 ```
 
-默认服务以本地命令模式运行。需要把微信消息转给 Codex 时，使用：
+如果你希望直接从仓库脚本启动服务，可以使用：
+
+```bash
+./scripts/start-weixin-service.sh
+```
+
+根仓库里的 `weixin:*` 命令会转发到 `tools/weixin-bridge/` 子项目。默认服务以本地命令模式运行。需要把微信消息转给 Codex 时，使用：
 
 ```bash
 npm run weixin:service:uninstall

@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import fsSync from "node:fs";
+import { fileURLToPath } from "node:url";
 import os from "node:os";
 import path from "node:path";
 import { weixinPlugin } from "@tencent-weixin/openclaw-weixin/dist/src/channel.js";
@@ -17,6 +18,9 @@ export const backoffDelayMs = 30_000;
 export const retryDelayMs = 2_000;
 export const defaultBotType = "3";
 export const cdnBaseUrl = "https://novac2c.cdn.weixin.qq.com/c2c";
+export const srcDir = path.dirname(fileURLToPath(import.meta.url));
+export const toolDir = path.resolve(srcDir, "..");
+export const projectRoot = path.resolve(toolDir, "..", "..");
 
 const messageItemType = {
   TEXT: 1,
@@ -25,14 +29,14 @@ const messageItemType = {
   VIDEO: 5,
 };
 
-const uploadMediaType = {
-  IMAGE: 1,
-  VIDEO: 2,
-  FILE: 3,
+type RequestOptions = {
+  baseUrl?: string;
+  token?: string;
+  timeoutMs?: number;
 };
 
-export function getStateDir(root = process.cwd()) {
-  return process.env.WEIXIN_BRIDGE_STATE || path.join(root, ".weixin-bridge");
+export function getStateDir(_root = process.cwd()) {
+  return process.env.WEIXIN_BRIDGE_STATE || path.join(toolDir, "state");
 }
 
 export function getPaths(stateDir) {
@@ -82,7 +86,7 @@ export function baseInfo() {
 }
 
 function commonHeaders(token) {
-  const headers = {
+  const headers: Record<string, string> = {
     "Content-Type": "application/json",
     "iLink-App-Id": appId,
     "iLink-App-ClientVersion": appClientVersion,
@@ -95,7 +99,7 @@ function commonHeaders(token) {
   return headers;
 }
 
-export async function postJson(endpoint, body, opts = {}) {
+export async function postJson(endpoint, body, opts: RequestOptions = {}) {
   const controller = opts.timeoutMs ? new AbortController() : undefined;
   const timer = controller ? setTimeout(() => controller.abort(), opts.timeoutMs) : undefined;
   try {
@@ -113,7 +117,7 @@ export async function postJson(endpoint, body, opts = {}) {
   }
 }
 
-export async function getJson(endpoint, opts = {}) {
+export async function getJson(endpoint, opts: RequestOptions = {}) {
   const controller = opts.timeoutMs ? new AbortController() : undefined;
   const timer = controller ? setTimeout(() => controller.abort(), opts.timeoutMs) : undefined;
   try {
@@ -208,7 +212,7 @@ export async function saveAccount(stateDir, account, { makeDefault = false } = {
   if (makeDefault || !def?.token) await writeJson(paths.accountFile, account);
 }
 
-export async function resolveAccount(stateDir, accountId) {
+export async function resolveAccount(stateDir, accountId?) {
   const accounts = await listAccounts(stateDir);
   if (!accounts.length) {
     const legacy = await loadDefaultAccount(stateDir);
@@ -336,7 +340,7 @@ export async function downloadRemoteMediaToTemp(url, stateDir) {
   await fs.writeFile(filePath, buf);
   return filePath;
 }
-export async function sendMediaMessage({ stateDir, account, to, message = "", mediaUrl, filePath, markdown = false }) {
+export async function sendMediaMessage({ stateDir, account, to, message = "", mediaUrl, filePath = "", markdown = false }) {
   const target = to || account.userId;
   if (!target) throw new Error("缺少目标 userId（账号未提供默认 userId，请显式传 to）");
   const tokens = await getContextTokens(stateDir, account);
@@ -423,7 +427,7 @@ export async function writeInbox(stateDir, message) {
   return file;
 }
 
-export async function listInbox(stateDir, { limit = 50, since } = {}) {
+export async function listInbox(stateDir, { limit = 50, since } = { limit: 50, since: undefined }) {
   const { inboxDir } = getPaths(stateDir);
   if (!fsSync.existsSync(inboxDir)) return [];
   const files = (await fs.readdir(inboxDir))

@@ -16,6 +16,7 @@ import {
   listAccounts,
   listInbox,
   maxConsecutiveFailures,
+  projectRoot,
   resolveAccount,
   retryDelayMs,
   sendMediaMessage,
@@ -25,9 +26,9 @@ import {
   textFromItems,
   writeInbox,
   writeJson,
-} from "./weixin-core.mjs";
+} from "./weixin-core.js";
 
-const root = process.cwd();
+const root = projectRoot;
 const stateDir = getStateDir(root);
 const paths = getPaths(stateDir);
 
@@ -37,13 +38,13 @@ const apiToken = process.env.WEIXIN_API_TOKEN || ""; // 可选；非空时强制
 
 function usage() {
   console.log(`Usage:
-  node scripts/weixin-server.mjs [--no-listen] [--codex] [--write]
+  node dist/weixin-server.js [--no-listen] [--codex] [--write]
 
 Env:
   WEIXIN_API_PORT   监听端口，默认 8787
   WEIXIN_API_HOST   绑定地址，默认 127.0.0.1
   WEIXIN_API_TOKEN  非空时，所有请求必须带 Authorization: Bearer <token>
-  WEIXIN_BRIDGE_STATE  状态目录，默认 <cwd>/.weixin-bridge
+  WEIXIN_BRIDGE_STATE  状态目录，默认 <repo>/tools/weixin-bridge/state
 
 Endpoints:
   GET  /health
@@ -322,7 +323,7 @@ async function startHttpServer() {
       sendError(res, 500, String(err.message || err));
     });
   });
-  await new Promise((resolve, reject) => {
+  await new Promise<void>((resolve, reject) => {
     server.once("error", reject);
     server.listen(port, host, () => {
       server.removeListener("error", reject);
@@ -361,7 +362,7 @@ async function runCodex(text, opts) {
     `微信消息：${text}`,
   ].join("\n\n");
   const outFile = path.join(stateDir, "last-codex-reply.txt");
-  await new Promise((resolve, reject) => {
+  await new Promise<void>((resolve, reject) => {
     const args = [
       "exec",
       "-C", root,

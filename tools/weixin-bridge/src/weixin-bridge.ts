@@ -23,7 +23,7 @@ import {
   loadDefaultAccount,
   normalizeAccountId,
   postJson,
-  readJson,
+  projectRoot,
   resolveAccount,
   saveAccount,
   sendMediaMessage,
@@ -33,26 +33,26 @@ import {
   textFromItems,
   writeInbox,
   writeJson,
-} from "./weixin-core.mjs";
+} from "./weixin-core.js";
 
-const root = process.cwd();
+const root = projectRoot;
 const stateDir = getStateDir(root);
 const paths = getPaths(stateDir);
 
 function usage() {
   console.log(`Usage:
-  node scripts/weixin-bridge.mjs login
-  node scripts/weixin-bridge.mjs import-openclaw
-  node scripts/weixin-bridge.mjs status
-  node scripts/weixin-bridge.mjs listen [--codex] [--write] [--once]
-  node scripts/weixin-bridge.mjs send --message "text" [--to user@im.wechat]
-  node scripts/weixin-bridge.mjs send-media --media-url <url-or-path> [--message "caption"]
+  node dist/weixin-bridge.js login
+  node dist/weixin-bridge.js import-openclaw
+  node dist/weixin-bridge.js status
+  node dist/weixin-bridge.js listen [--codex] [--write] [--once]
+  node dist/weixin-bridge.js send --message "text" [--to user@im.wechat]
+  node dist/weixin-bridge.js send-media --media-url <url-or-path> [--message "caption"]
 
 Notes:
   - Default listen mode is local command mode.
   - --codex routes inbound messages to codex exec in read-only sandbox.
   - --write changes Codex sandbox to workspace-write.
-  - For HTTP API usage prefer scripts/weixin-server.mjs.`);
+  - For HTTP API usage prefer node dist/weixin-server.js.`);
 }
 
 function argValue(args, name) {
@@ -174,7 +174,7 @@ async function runCodex(text, opts) {
     `微信消息：${text}`,
   ].join("\n\n");
   const outFile = path.join(stateDir, "last-codex-reply.txt");
-  await new Promise((resolve, reject) => {
+  await new Promise<void>((resolve, reject) => {
     const args = [
       "exec",
       "-C", root,
