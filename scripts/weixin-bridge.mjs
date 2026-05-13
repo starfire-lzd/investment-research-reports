@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import fsSync from "node:fs";
 import os from "node:os";
@@ -7,25 +6,38 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 import qrcode from "qrcode-terminal";
 
+import {
+  apiBaseUrl,
+  defaultBotType,
+  defaultLongPollTimeoutMs,
+  maxConsecutiveFailures,
+  backoffDelayMs,
+  retryDelayMs,
+  appendLog,
+  ensureState,
+  getJson,
+  getAccountPaths,
+  getPaths,
+  getStateDir,
+  getUpdates,
+  loadDefaultAccount,
+  normalizeAccountId,
+  postJson,
+  readJson,
+  resolveAccount,
+  saveAccount,
+  sendMediaMessage,
+  sendMessage,
+  setContextToken,
+  sleep,
+  textFromItems,
+  writeInbox,
+  writeJson,
+} from "./weixin-core.mjs";
+
 const root = process.cwd();
-const stateDir = process.env.WEIXIN_BRIDGE_STATE || path.join(root, ".weixin-bridge");
-const accountFile = path.join(stateDir, "account.json");
-const syncFile = path.join(stateDir, "sync.json");
-const contextFile = path.join(stateDir, "context-tokens.json");
-const inboxDir = path.join(stateDir, "inbox");
-const logFile = path.join(stateDir, "bridge.log");
-
-const apiBaseUrl = "https://ilinkai.weixin.qq.com";
-const defaultBotType = "3";
-const channelVersion = "2.4.3";
-const appId = "bot";
-const appClientVersion = String((2 << 16) | (4 << 8) | 3);
-
-// Keep these aligned with @tencent-weixin/openclaw-weixin/src/monitor/monitor.ts.
-const defaultLongPollTimeoutMs = 35_000;
-const maxConsecutiveFailures = 3;
-const backoffDelayMs = 30_000;
-const retryDelayMs = 2_000;
+const stateDir = getStateDir(root);
+const paths = getPaths(stateDir);
 
 function usage() {
   console.log(`Usage:
@@ -34,155 +46,24 @@ function usage() {
   node scripts/weixin-bridge.mjs status
   node scripts/weixin-bridge.mjs listen [--codex] [--write] [--once]
   node scripts/weixin-bridge.mjs send --message "text" [--to user@im.wechat]
+  node scripts/weixin-bridge.mjs send-media --media-url <url-or-path> [--message "caption"]
 
 Notes:
   - Default listen mode is local command mode.
   - --codex routes inbound messages to codex exec in read-only sandbox.
-  - --write changes Codex sandbox to workspace-write.`);
+  - --write changes Codex sandbox to workspace-write.
+  - For HTTP API usage prefer scripts/weixin-server.mjs.`);
 }
 
-async function ensureState() {
-  await fs.mkdir(stateDir, { recursive: true });
-  await fs.mkdir(inboxDir, { recursive: true });
+function argValue(args, name) {
+  const i = args.indexOf(name);
+  if (i >= 0) return args[i + 1];
+  const eq = args.find((a) => a.startsWith(`${name}=`));
+  return eq ? eq.slice(name.length + 1) : undefined;
 }
 
-async function log(line) {
-  await ensureState();
-  await fs.appendFile(logFile, `${new Date().toISOString()} ${line}\n`);
-}
-
-function randomWechatUin() {
-  const uint32 = crypto.randomBytes(4).readUInt32BE(0);
-  return Buffer.from(String(uint32), "utf-8").toString("base64");
-}
-
-function baseInfo() {
-  return {
-    channel_version: channelVersion,
-    bot_agent: "CodexWeixinBridge/0.1.0",
-  };
-}
-
-function commonHeaders(withToken) {
-  const headers = {
-    "Content-Type": "application/json",
-    "iLink-App-Id": appId,
-    "iLink-App-ClientVersion": appClientVersion,
-    "X-WECHAT-UIN": randomWechatUin(),
-  };
-  if (withToken) {
-    headers.AuthorizationType = "ilink_bot_token";
-    headers.Authorization = `Bearer ${withToken}`;
-  }
-  return headers;
-}
-
-async function postJson(endpoint, body, opts = {}) {
-  const controller = opts.timeoutMs ? new AbortController() : undefined;
-  const timer = controller ? setTimeout(() => controller.abort(), opts.timeoutMs) : undefined;
-  try {
-    const res = await fetch(new URL(endpoint, `${opts.baseUrl || apiBaseUrl}/`), {
-      method: "POST",
-      headers: commonHeaders(opts.token),
-      body: JSON.stringify(body),
-      signal: controller?.signal,
-    });
-    const text = await res.text();
-    if (!res.ok) throw new Error(`${endpoint} ${res.status}: ${text}`);
-    return text ? JSON.parse(text) : {};
-  } finally {
-    if (timer) clearTimeout(timer);
-  }
-}
-
-async function getJson(endpoint, opts = {}) {
-  const controller = opts.timeoutMs ? new AbortController() : undefined;
-  const timer = controller ? setTimeout(() => controller.abort(), opts.timeoutMs) : undefined;
-  try {
-    const res = await fetch(new URL(endpoint, `${opts.baseUrl || apiBaseUrl}/`), {
-      method: "GET",
-      headers: {
-        "iLink-App-Id": appId,
-        "iLink-App-ClientVersion": appClientVersion,
-      },
-      signal: controller?.signal,
-    });
-    const text = await res.text();
-    if (!res.ok) throw new Error(`${endpoint} ${res.status}: ${text}`);
-    return text ? JSON.parse(text) : {};
-  } finally {
-    if (timer) clearTimeout(timer);
-  }
-}
-
-async function readJson(file, fallback) {
-  try {
-    return JSON.parse(await fs.readFile(file, "utf8"));
-  } catch {
-    return fallback;
-  }
-}
-
-async function writeJson(file, value, mode = 0o600) {
-  await fs.mkdir(path.dirname(file), { recursive: true });
-  await fs.writeFile(file, JSON.stringify(value, null, 2), "utf8");
-  try {
-    await fs.chmod(file, mode);
-  } catch {
-    // best effort
-  }
-}
-
-function normalizeAccountId(raw) {
-  return raw.replace("@", "-").replace(".", "-");
-}
-
-async function loadAccount() {
-  const local = await readJson(accountFile, null);
-  if (local?.token) return local;
-
-  const legacyRoot = path.join(os.homedir(), ".openclaw", "openclaw-weixin");
-  const index = await readJson(path.join(legacyRoot, "accounts.json"), []);
-  const id = index.at(-1);
-  if (!id) return null;
-  const legacy = await readJson(path.join(legacyRoot, "accounts", `${id}.json`), null);
-  if (!legacy?.token) return null;
-  return {
-    accountId: id,
-    token: legacy.token,
-    baseUrl: legacy.baseUrl || apiBaseUrl,
-    userId: legacy.userId,
-    savedAt: legacy.savedAt,
-    importedFrom: "openclaw",
-  };
-}
-
-async function importOpenClaw() {
-  await ensureState();
-  const account = await loadAccount();
-  if (!account?.token) {
-    throw new Error("未找到可导入的 OpenClaw 微信登录凭据，请先运行 login。");
-  }
-  await writeJson(accountFile, account);
-
-  const legacyRoot = path.join(os.homedir(), ".openclaw", "openclaw-weixin", "accounts");
-  for (const [legacyName, target] of [
-    [`${account.accountId}.sync.json`, syncFile],
-    [`${account.accountId}.context-tokens.json`, contextFile],
-  ]) {
-    const source = path.join(legacyRoot, legacyName);
-    if (fsSync.existsSync(source)) {
-      await fs.copyFile(source, target);
-      await fs.chmod(target, 0o600).catch(() => {});
-    }
-  }
-
-  console.log(`已导入微信账号：${account.accountId}`);
-  if (account.userId) console.log(`最近扫码用户：${account.userId}`);
-}
-
-async function login() {
-  await ensureState();
+async function login(args = []) {
+  await ensureState(stateDir);
   const qr = await postJson(`ilink/bot/get_bot_qrcode?bot_type=${encodeURIComponent(defaultBotType)}`, {
     local_token_list: [],
   });
@@ -217,13 +98,15 @@ async function login() {
       const accountId = normalizeAccountId(status.ilink_bot_id || "default@im.bot");
       const account = {
         accountId,
+        name: argValue(args, "--account-name"),
         token: status.bot_token,
         baseUrl: status.baseurl || baseUrl,
         userId: status.ilink_user_id,
         savedAt: new Date().toISOString(),
       };
-      await writeJson(accountFile, account);
+      await saveAccount(stateDir, account, { makeDefault: args.includes("--default") });
       console.log(`登录成功：${accountId}`);
+      if (account.name) console.log(`账号名：${account.name}`);
       if (account.userId) console.log(`扫码用户：${account.userId}`);
       return;
     }
@@ -233,85 +116,29 @@ async function login() {
   throw new Error("等待扫码超时。");
 }
 
-function textFromItems(items = []) {
-  for (const item of items) {
-    if (item.type === 1 && item.text_item?.text != null) return String(item.text_item.text);
-    if (item.voice_item?.text) return String(item.voice_item.text);
+async function importOpenClaw() {
+  await ensureState(stateDir);
+  const account = await loadDefaultAccount(stateDir);
+  if (!account?.token) {
+    throw new Error("未找到可导入的 OpenClaw 微信登录凭据，请先运行 login。");
   }
-  return "";
-}
+  await saveAccount(stateDir, account, { makeDefault: true });
 
-async function getContextTokens() {
-  return await readJson(contextFile, {});
-}
-
-async function setContextToken(userId, token) {
-  if (!userId || !token) return;
-  const tokens = await getContextTokens();
-  tokens[userId] = token;
-  await writeJson(contextFile, tokens);
-}
-
-async function getUpdates(account, timeoutMs = defaultLongPollTimeoutMs) {
-  const sync = await readJson(syncFile, { get_updates_buf: "" });
-  let resp;
-  try {
-    resp = await postJson("ilink/bot/getupdates", {
-      get_updates_buf: sync.get_updates_buf || "",
-      base_info: baseInfo(),
-    }, {
-      baseUrl: account.baseUrl,
-      token: account.token,
-      timeoutMs,
-    });
-  } catch (err) {
-    if (err.name === "AbortError") {
-      return { messages: [], nextTimeoutMs: timeoutMs };
+  const legacyRoot = path.join(os.homedir(), ".openclaw", "openclaw-weixin", "accounts");
+  const accountPaths = getAccountPaths(stateDir, account.accountId);
+  for (const [legacyName, target] of [
+    [`${account.accountId}.sync.json`, accountPaths.syncFile],
+    [`${account.accountId}.context-tokens.json`, accountPaths.contextFile],
+  ]) {
+    const source = path.join(legacyRoot, legacyName);
+    if (fsSync.existsSync(source)) {
+      await fs.copyFile(source, target);
+      await fs.chmod(target, 0o600).catch(() => {});
     }
-    throw err;
   }
-  if (resp.get_updates_buf) await writeJson(syncFile, { get_updates_buf: resp.get_updates_buf });
-  return {
-    messages: resp.msgs || [],
-    nextTimeoutMs:
-      Number.isFinite(resp.longpolling_timeout_ms) && resp.longpolling_timeout_ms > 0
-        ? resp.longpolling_timeout_ms
-        : timeoutMs,
-  };
-}
 
-async function sendMessage({ to, message }) {
-  const account = await loadAccount();
-  if (!account?.token) throw new Error("微信未登录。请先运行 npm run weixin:login 或 npm run weixin:import-openclaw。");
-  const target = to || account.userId;
-  if (!target) throw new Error("缺少目标 userId。请使用 --to <user@im.wechat>。");
-  const tokens = await getContextTokens();
-  const contextToken = tokens[target];
-  const clientId = `codex-weixin-${crypto.randomUUID()}`;
-  await postJson("ilink/bot/sendmessage", {
-    msg: {
-      from_user_id: "",
-      to_user_id: target,
-      client_id: clientId,
-      message_type: 1,
-      message_state: 2,
-      item_list: [{ type: 1, text_item: { text: message } }],
-      context_token: contextToken,
-    },
-    base_info: baseInfo(),
-  }, {
-    baseUrl: account.baseUrl,
-    token: account.token,
-    timeoutMs: 15_000,
-  });
-  console.log(`sent ${clientId} -> ${target}`);
-}
-
-async function writeInbox(message) {
-  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-  const file = path.join(inboxDir, `${stamp}-${message.from}.json`);
-  await writeJson(file, message, 0o600);
-  return file;
+  console.log(`已导入微信账号：${account.accountId}`);
+  if (account.userId) console.log(`最近扫码用户：${account.userId}`);
 }
 
 function localCommandReply(text) {
@@ -368,12 +195,11 @@ async function runCodex(text, opts) {
 }
 
 async function listen(opts) {
-  await ensureState();
-  const account = await loadAccount();
-  if (!account?.token) throw new Error("微信未登录。请先运行 login 或 import-openclaw。");
-  await writeJson(accountFile, account);
+  await ensureState(stateDir);
+  const account = await resolveAccount(stateDir);
+  await writeJson(paths.accountFile, account);
   console.log(`listening account=${account.accountId} baseUrl=${account.baseUrl}`);
-  await log(`listen start account=${account.accountId} codex=${opts.codex} write=${opts.write}`);
+  await appendLog(stateDir, `listen start account=${account.accountId} codex=${opts.codex} write=${opts.write}`);
 
   let nextTimeoutMs = defaultLongPollTimeoutMs;
   let consecutiveFailures = 0;
@@ -381,7 +207,7 @@ async function listen(opts) {
   while (true) {
     let messages = [];
     try {
-      const result = await getUpdates(account, nextTimeoutMs);
+      const result = await getUpdates(stateDir, account, nextTimeoutMs);
       messages = result.messages;
       nextTimeoutMs = result.nextTimeoutMs;
       consecutiveFailures = 0;
@@ -389,10 +215,10 @@ async function listen(opts) {
       consecutiveFailures += 1;
       const summary = String(err).slice(0, 800);
       console.error(`getUpdates failed (${consecutiveFailures}/${maxConsecutiveFailures}): ${summary}`);
-      await log(`getUpdates failed count=${consecutiveFailures} err=${summary}`);
+      await appendLog(stateDir, `getUpdates failed count=${consecutiveFailures} err=${summary}`);
       if (consecutiveFailures >= maxConsecutiveFailures) {
         consecutiveFailures = 0;
-        await log(`getUpdates backoff ${backoffDelayMs}ms`);
+        await appendLog(stateDir, `getUpdates backoff ${backoffDelayMs}ms`);
         await sleep(backoffDelayMs);
       } else {
         await sleep(retryDelayMs);
@@ -405,10 +231,10 @@ async function listen(opts) {
       const from = msg.from_user_id || "";
       const text = textFromItems(msg.item_list);
       if (!from || !text) continue;
-      if (msg.context_token) await setContextToken(from, msg.context_token);
-      const saved = await writeInbox({ from, text, raw: msg, receivedAt: new Date().toISOString() });
+      if (msg.context_token) await setContextToken(stateDir, from, msg.context_token, account);
+      const saved = await writeInbox(stateDir, { from, text, raw: msg, receivedAt: new Date().toISOString() });
       console.log(`inbound ${from}: ${text}`);
-      await log(`inbound from=${from} file=${saved}`);
+      await appendLog(stateDir, `inbound from=${from} file=${saved}`);
 
       let reply;
       try {
@@ -416,29 +242,22 @@ async function listen(opts) {
       } catch (err) {
         reply = `处理失败：${String(err).slice(0, 800)}`;
       }
-      if (reply) await sendMessage({ to: from, message: reply.slice(0, 3500) });
+      if (reply) {
+        await sendMessage({ stateDir, account, to: from, message: reply.slice(0, 3500) });
+      }
     }
     if (opts.once) break;
   }
-}
-
-function argValue(args, name) {
-  const i = args.indexOf(name);
-  return i >= 0 ? args[i + 1] : undefined;
-}
-
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 async function main() {
   const [cmd, ...args] = process.argv.slice(2);
   try {
     if (!cmd || cmd === "help" || cmd === "--help") return usage();
-    if (cmd === "login") return await login();
+    if (cmd === "login") return await login(args);
     if (cmd === "import-openclaw") return await importOpenClaw();
     if (cmd === "status") {
-      const account = await loadAccount();
+      const account = await loadDefaultAccount(stateDir);
       console.log({
         stateDir,
         hasAccount: Boolean(account?.token),
@@ -451,8 +270,30 @@ async function main() {
     if (cmd === "send") {
       const message = argValue(args, "--message") || args.join(" ").trim();
       const to = argValue(args, "--to");
+      const accountId = argValue(args, "--account");
       if (!message) throw new Error("缺少消息内容。");
-      return await sendMessage({ to, message });
+      const account = await resolveAccount(stateDir, accountId);
+      const result = await sendMessage({ stateDir, account, to, message, markdown: args.includes("--markdown") });
+      console.log(`sent ${result.clientId} -> ${result.to}`);
+      return;
+    }
+    if (cmd === "send-media") {
+      const message = argValue(args, "--message") || "";
+      const to = argValue(args, "--to");
+      const accountId = argValue(args, "--account");
+      const mediaUrl = argValue(args, "--media-url") || argValue(args, "--file");
+      if (!mediaUrl) throw new Error("缺少 --media-url 或 --file");
+      const account = await resolveAccount(stateDir, accountId);
+      const result = await sendMediaMessage({
+        stateDir,
+        account,
+        to,
+        message,
+        mediaUrl,
+        markdown: args.includes("--markdown"),
+      });
+      console.log(`sent media ${result.clientId} -> ${result.to} (${result.mediaType})`);
+      return;
     }
     if (cmd === "listen") {
       return await listen({

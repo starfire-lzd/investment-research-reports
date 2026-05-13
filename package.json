@@ -6,8 +6,11 @@
   "scripts": {
     "build": "node scripts/build-site.mjs",
     "weixin:login": "node scripts/weixin-bridge.mjs login",
+    "weixin:status": "node scripts/weixin-bridge.mjs status",
     "weixin:listen": "node scripts/weixin-bridge.mjs listen",
     "weixin:send": "node scripts/weixin-bridge.mjs send",
+    "weixin:send-media": "node scripts/weixin-bridge.mjs send-media",
+    "weixin:server": "node scripts/weixin-server.mjs",
     "weixin:service:install": "node scripts/weixin-service.mjs install",
     "weixin:service:start": "node scripts/weixin-service.mjs start",
     "weixin:service:stop": "node scripts/weixin-service.mjs stop",

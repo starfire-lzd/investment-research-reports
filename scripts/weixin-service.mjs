@@ -12,16 +12,21 @@ const logsDir = path.join(stateDir, "logs");
 const stdoutPath = path.join(logsDir, "service.out.log");
 const stderrPath = path.join(logsDir, "service.err.log");
 const nodePath = process.execPath;
-const bridgePath = path.join(root, "scripts", "weixin-bridge.mjs");
+const serverPath = path.join(root, "scripts", "weixin-server.mjs");
 
 function usage() {
   console.log(`Usage:
-  node scripts/weixin-service.mjs install [--codex] [--write]
+  node scripts/weixin-service.mjs install [--codex] [--write] [--no-listen] [--port=N] [--host=H] [--token=T]
   node scripts/weixin-service.mjs start
   node scripts/weixin-service.mjs stop
   node scripts/weixin-service.mjs restart
   node scripts/weixin-service.mjs status
-  node scripts/weixin-service.mjs uninstall`);
+  node scripts/weixin-service.mjs uninstall
+
+Notes:
+  - 安装的是 HTTP 服务（scripts/weixin-server.mjs）。
+  - 默认监听 127.0.0.1:8787，同进程包含微信长轮询监听。
+  - --codex 会在收到入站消息时调 codex 自动回复；不加该参数则只收入到 inbox。`);
 }
 
 function run(cmd, args, opts = {}) {
@@ -49,7 +54,11 @@ function stringEntry(value) {
   return `    <string>${xmlEscape(value)}</string>`;
 }
 
-function plist(args) {
+function plist(serverArgs, envVars) {
+  const envEntries = Object.entries(envVars)
+    .filter(([, v]) => v !== undefined && v !== "")
+    .map(([k, v]) => `    <key>${xmlEscape(k)}</key>\n    <string>${xmlEscape(String(v))}</string>`)
+    .join("\n");
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -58,14 +67,13 @@ function plist(args) {
   <string>${label}</string>
   <key>ProgramArguments</key>
   <array>
-${[nodePath, bridgePath, "listen", ...args].map(stringEntry).join("\n")}
+${[nodePath, serverPath, ...serverArgs].map(stringEntry).join("\n")}
   </array>
   <key>WorkingDirectory</key>
   <string>${xmlEscape(root)}</string>
   <key>EnvironmentVariables</key>
   <dict>
-    <key>WEIXIN_BRIDGE_STATE</key>
-    <string>${xmlEscape(stateDir)}</string>
+${envEntries}
   </dict>
   <key>RunAtLoad</key>
   <true/>
@@ -80,15 +88,39 @@ ${[nodePath, bridgePath, "listen", ...args].map(stringEntry).join("\n")}
 `;
 }
 
+function parseFlagValue(args, name) {
+  const eq = args.find((a) => a.startsWith(`${name}=`));
+  if (eq) return eq.slice(name.length + 1);
+  const idx = args.indexOf(name);
+  if (idx >= 0 && args[idx + 1] && !args[idx + 1].startsWith("--")) return args[idx + 1];
+  return undefined;
+}
+
 async function install(args) {
   await fs.mkdir(path.dirname(plistPath), { recursive: true });
   await fs.mkdir(logsDir, { recursive: true });
-  const serviceArgs = [];
-  if (args.includes("--codex")) serviceArgs.push("--codex");
-  if (args.includes("--write")) serviceArgs.push("--write");
-  await fs.writeFile(plistPath, plist(serviceArgs), "utf8");
+
+  const serverArgs = [];
+  if (args.includes("--codex")) serverArgs.push("--codex");
+  if (args.includes("--write")) serverArgs.push("--write");
+  if (args.includes("--no-listen")) serverArgs.push("--no-listen");
+
+  const port = parseFlagValue(args, "--port");
+  const host = parseFlagValue(args, "--host");
+  const token = parseFlagValue(args, "--token");
+
+  const envVars = {
+    WEIXIN_BRIDGE_STATE: stateDir,
+    WEIXIN_API_PORT: port,
+    WEIXIN_API_HOST: host,
+    WEIXIN_API_TOKEN: token,
+    PATH: process.env.PATH || "/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin",
+  };
+
+  await fs.writeFile(plistPath, plist(serverArgs, envVars), "utf8");
   console.log(`Installed ${plistPath}`);
-  console.log(`Mode: listen ${serviceArgs.join(" ") || "(local command mode)"}`);
+  console.log(`Server flags: ${serverArgs.join(" ") || "(默认)"}`);
+  console.log(`Env: WEIXIN_API_HOST=${host || "127.0.0.1"} WEIXIN_API_PORT=${port || 8787} WEIXIN_API_TOKEN=${token ? "<set>" : "<none>"}`);
   await start();
 }
 
@@ -143,4 +175,3 @@ async function main() {
 }
 
 await main();
-
