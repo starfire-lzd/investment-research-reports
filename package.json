@@ -19,6 +19,8 @@
     "weixin:service:uninstall": "node scripts/weixin-service.mjs uninstall"
   },
   "dependencies": {
+    "@tencent-weixin/openclaw-weixin": "^2.4.3",
+    "openclaw": "file:stubs/openclaw",
     "qrcode-terminal": "^0.12.0"
   }
 }

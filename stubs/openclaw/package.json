@@ -1,0 +1,10 @@
+{
+  "name": "openclaw",
+  "version": "2026.5.7",
+  "type": "module",
+  "exports": {
+    "./plugin-sdk/infra-runtime": "./plugin-sdk/infra-runtime.js",
+    "./plugin-sdk/account-id": "./plugin-sdk/account-id.js",
+    "./plugin-sdk/config-runtime": "./plugin-sdk/config-runtime.js"
+  }
+}

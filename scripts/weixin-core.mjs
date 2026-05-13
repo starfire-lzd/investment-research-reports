@@ -3,8 +3,8 @@ import fs from "node:fs/promises";
 import fsSync from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { sendWeixinMediaFile } from "./weixin-openclaw/messaging/send-media.js";
-import { StreamingMarkdownFilter } from "./weixin-openclaw/messaging/send.js";
+import { sendWeixinMediaFile } from "@tencent-weixin/openclaw-weixin/dist/src/messaging/send-media.js";
+import { StreamingMarkdownFilter } from "@tencent-weixin/openclaw-weixin/dist/src/messaging/send.js";
 
 export const apiBaseUrl = "https://ilinkai.weixin.qq.com";
 export const channelVersion = "2.4.3";
