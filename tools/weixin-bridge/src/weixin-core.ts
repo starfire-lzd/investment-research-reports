@@ -59,6 +59,30 @@ export function getAccountPaths(stateDir, accountId) {
   };
 }
 
+function getInboxAliasDir(stateDir, alias) {
+  const normalizedAlias = normalizeAccountAlias(alias);
+  if (!normalizedAlias) {
+    throw new Error("inbox 目录缺少 alias，必须传入 default 或已登录账号 alias");
+  }
+  return path.join(getPaths(stateDir).inboxDir, normalizedAlias);
+}
+
+async function resolveInboxAlias(stateDir, message) {
+  const directAlias = normalizeAccountAlias(message?.alias);
+  if (directAlias) return directAlias;
+  const accountId = String(message?.accountId || message?.account || "").trim();
+  if (!accountId) {
+    throw new Error("writeInbox 缺少 alias/accountId，无法确定 inbox 目录");
+  }
+  const accounts = await listAccounts(stateDir);
+  const hit = accounts.find((item) => item.accountId === accountId);
+  const resolvedAlias = normalizeAccountAlias(hit?.alias);
+  if (!resolvedAlias) {
+    throw new Error(`writeInbox 未找到 accountId=${accountId} 对应的 alias`);
+  }
+  return resolvedAlias;
+}
+
 export async function ensureState(stateDir) {
   syncStandaloneEnv(stateDir);
   const p = getPaths(stateDir);
@@ -165,6 +189,13 @@ export function normalizeAccountId(raw) {
   return String(raw).replaceAll("@", "-").replaceAll(".", "-");
 }
 
+export function normalizeAccountAlias(raw) {
+  return String(raw || "")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, "-");
+}
+
 export async function loadDefaultAccount(stateDir) {
   const { accountFile } = getPaths(stateDir);
   const local = await readJson(accountFile, null);
@@ -211,23 +242,39 @@ export async function listAccounts(stateDir) {
 
 export async function saveAccount(stateDir, account, { makeDefault = false } = {}) {
   if (!account?.accountId || !account?.token) throw new Error("accountId/token 不能为空");
+  const alias = normalizeAccountAlias(account.alias);
+  if (!alias) throw new Error("alias 不能为空，请在登录时通过 --alias 传入");
   const paths = getPaths(stateDir);
+  const accounts = await listAccounts(stateDir);
+  const duplicate = accounts.find((item) => item.accountId !== account.accountId && normalizeAccountAlias(item.alias) === alias);
+  if (duplicate) {
+    throw new Error(`alias=${alias} 已被占用（accountId=${duplicate.accountId}）`);
+  }
   const accountPaths = getAccountPaths(stateDir, account.accountId);
-  await writeJson(accountPaths.accountFile, account);
+  const nextAccount = { ...account, alias };
+  await writeJson(accountPaths.accountFile, nextAccount);
   const def = await readJson(paths.accountFile, null);
-  if (makeDefault || !def?.token) await writeJson(paths.accountFile, account);
+  if (makeDefault || !def?.token) await writeJson(paths.accountFile, nextAccount);
 }
 
-export async function resolveAccount(stateDir, accountId?) {
+export async function resolveAccount(stateDir, selector?) {
   const accounts = await listAccounts(stateDir);
   if (!accounts.length) {
     const legacy = await loadDefaultAccount(stateDir);
     if (legacy?.token) return legacy;
     throw new Error("微信未登录。请先运行 npm run weixin:login 或 npm run weixin:import-openclaw。");
   }
-  if (!accountId) return accounts[0];
-  const hit = accounts.find((a) => a.accountId === accountId);
-  if (!hit) throw new Error(`未找到 accountId=${accountId}（已登录：${accounts.map((a) => a.accountId).join(", ")}）`);
+  const defaultAccount = accounts.find((a) => a._source === "default") || accounts[0];
+  if (!selector || selector === "default") return defaultAccount;
+  const alias = normalizeAccountAlias(selector);
+  const hit = accounts.find((a) => normalizeAccountAlias(a.alias) === alias);
+  if (!hit) {
+    const available = accounts
+      .map((a) => a.alias ? `${normalizeAccountAlias(a.alias)}${a._source === "default" ? " (default)" : ""}` : null)
+      .filter(Boolean)
+      .join(", ");
+    throw new Error(`未找到 alias=${selector}。仅支持传 default 或已登录账号 alias（可用：${available || "无"}）`);
+  }
   return hit;
 }
 
@@ -549,7 +596,7 @@ export async function getUpdates(stateDir, account, timeoutMs = defaultLongPollT
 }
 
 export async function writeInbox(stateDir, message) {
-  const { inboxDir } = getPaths(stateDir);
+  const inboxDir = getInboxAliasDir(stateDir, await resolveInboxAlias(stateDir, message));
   await fs.mkdir(inboxDir, { recursive: true });
   const stamp = new Date().toISOString().replace(/[:.]/g, "-");
   const file = path.join(inboxDir, `${stamp}-${message.from}.json`);
@@ -557,8 +604,12 @@ export async function writeInbox(stateDir, message) {
   return file;
 }
 
-export async function listInbox(stateDir, { limit = 50, since } = { limit: 50, since: undefined }) {
-  const { inboxDir } = getPaths(stateDir);
+export async function listInbox(stateDir, { account, limit = 50, since } = { account: undefined, limit: 50, since: undefined }) {
+  if (!account) {
+    throw new Error("listInbox 必须传入 account=default 或账号 alias，不再支持聚合全部账号 inbox");
+  }
+  const resolved = await resolveAccount(stateDir, account);
+  const inboxDir = getInboxAliasDir(stateDir, resolved.alias);
   if (!fsSync.existsSync(inboxDir)) return [];
   const files = (await fs.readdir(inboxDir))
     .filter((f) => f.endsWith(".json"))

@@ -193,14 +193,25 @@ async function handleContacts(req, res) {
 
 async function handleInbox(req, res) {
   const url = new URL(req.url, `http://${req.headers.host || "localhost"}`);
+  const accountId = url.searchParams.get("account") || undefined;
   const limit = Math.min(Number(url.searchParams.get("limit") || 50), 500);
   const since = url.searchParams.get("since") || undefined;
-  const messages = await listInbox(stateDir, { limit, since });
+  if (!accountId) {
+    return sendError(res, 400, "account 必填，只支持 default 或已登录账号 alias");
+  }
+  let account;
+  try {
+    account = await resolveAccount(stateDir, accountId);
+  } catch (err) {
+    return sendError(res, 404, String(err.message || err));
+  }
+  const messages = await listInbox(stateDir, { account: accountId, limit, since });
   sendJson(res, 200, {
     ok: true,
+    account: account.alias,
     count: messages.length,
     messages: messages.map((m) => ({
-      account: m.account,
+      account: m.alias || account.alias,
       from: m.from,
       text: m.text,
       receivedAt: m.receivedAt,
