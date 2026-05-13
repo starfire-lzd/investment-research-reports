@@ -9,6 +9,11 @@ const reportLabels = {
   "盘中分析.md": "盘中分析",
   "盘后复盘.md": "盘后复盘"
 };
+const reportSlugs = {
+  "盘前分析.md": "pre-market",
+  "盘中分析.md": "intraday",
+  "盘后复盘.md": "post-market"
+};
 
 function escapeHtml(value) {
   return value
@@ -19,7 +24,7 @@ function escapeHtml(value) {
 }
 
 function slugify(value) {
-  return encodeURIComponent(value.replace(/\.md$/, ""));
+  return reportSlugs[value] ?? encodeURIComponent(value.replace(/\.md$/, ""));
 }
 
 function inlineMarkdown(value) {
@@ -254,4 +259,3 @@ main().catch((error) => {
   console.error(error);
   process.exit(1);
 });
-
