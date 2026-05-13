@@ -3,6 +3,8 @@ import fs from "node:fs/promises";
 import fsSync from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { sendWeixinMediaFile } from "./weixin-openclaw/messaging/send-media.js";
+import { StreamingMarkdownFilter } from "./weixin-openclaw/messaging/send.js";
 
 export const apiBaseUrl = "https://ilinkai.weixin.qq.com";
 export const channelVersion = "2.4.3";
@@ -248,16 +250,8 @@ function getContextTokenForTarget(tokens, target) {
 }
 
 export function filterMarkdown(text) {
-  return String(text ?? "")
-    .replace(/!\[[^\]]*]\([^)]*\)/g, "")
-    .replace(/^#{5,6}\s+/gm, "")
-    .replace(/(^|\n)>\s?/g, "$1")
-    .replace(/~~([^~]+)~~/g, "$1")
-    .replace(/(^|[^\w])\*([^*\n]+)\*(?=$|[^\w])/g, "$1$2")
-    .replace(/(^|[^\w])_([^_\n]+)_(?=$|[^\w])/g, "$1$2")
-    .replace(/\*\*\*([^*\n]+)\*\*\*/g, "**$1**")
-    .replace(/___([^_\n]+)___/g, "__$1__")
-    .trim();
+  const filter = new StreamingMarkdownFilter();
+  return filter.feed(String(text ?? "")) + filter.flush();
 }
 
 export async function sendMessage({ stateDir, account, to, message, markdown = false }) {
@@ -412,6 +406,7 @@ async function uploadMedia({ account, target, filePath, mediaType }) {
     filekey,
     downloadEncryptedQueryParam,
     aeskey: aeskey.toString("hex"),
+    aeskeyBase64: aeskey.toString("base64"),
     fileSize: rawsize,
     fileSizeCiphertext: filesize,
   };
@@ -451,63 +446,17 @@ export async function sendMediaMessage({ stateDir, account, to, message = "", me
   await fs.access(localPath);
 
   const text = markdown ? filterMarkdown(message) : String(message || "");
-  const sentClientIds = [];
-  if (text.trim()) {
-    sentClientIds.push(await sendOneItem({
-      account,
-      target,
-      contextToken,
-      item: { type: messageItemType.TEXT, text_item: { text } },
-    }));
-  }
-
   const mime = mimeFromFilename(localPath);
-  let item;
-  if (mime.startsWith("image/")) {
-    const uploaded = await uploadMedia({ account, target, filePath: localPath, mediaType: uploadMediaType.IMAGE });
-    item = {
-      type: messageItemType.IMAGE,
-      image_item: {
-        media: {
-          encrypt_query_param: uploaded.downloadEncryptedQueryParam,
-          aes_key: Buffer.from(uploaded.aeskey).toString("base64"),
-          encrypt_type: 1,
-        },
-        mid_size: uploaded.fileSizeCiphertext,
-      },
-    };
-  } else if (mime.startsWith("video/")) {
-    const uploaded = await uploadMedia({ account, target, filePath: localPath, mediaType: uploadMediaType.VIDEO });
-    item = {
-      type: messageItemType.VIDEO,
-      video_item: {
-        media: {
-          encrypt_query_param: uploaded.downloadEncryptedQueryParam,
-          aes_key: Buffer.from(uploaded.aeskey).toString("base64"),
-          encrypt_type: 1,
-        },
-        video_size: uploaded.fileSizeCiphertext,
-      },
-    };
-  } else {
-    const uploaded = await uploadMedia({ account, target, filePath: localPath, mediaType: uploadMediaType.FILE });
-    item = {
-      type: messageItemType.FILE,
-      file_item: {
-        media: {
-          encrypt_query_param: uploaded.downloadEncryptedQueryParam,
-          aes_key: Buffer.from(uploaded.aeskey).toString("base64"),
-          encrypt_type: 1,
-        },
-        file_name: path.basename(localPath),
-        len: String(uploaded.fileSize),
-      },
-    };
-  }
-  sentClientIds.push(await sendOneItem({ account, target, contextToken, item }));
+  const result = await sendWeixinMediaFile({
+    filePath: localPath,
+    to: target,
+    text,
+    opts: { baseUrl: account.baseUrl, token: account.token, contextToken },
+    cdnBaseUrl,
+  });
   return {
-    clientId: sentClientIds.at(-1),
-    clientIds: sentClientIds,
+    clientId: result.messageId,
+    clientIds: [result.messageId],
     to: target,
     hasContextToken: Boolean(contextToken),
     mediaType: mime,
