@@ -18,6 +18,10 @@ const systemPages = [
   { title: "交易规则库", fileName: "rules.md", output: "rules.html", description: "长期可复用的判断、执行和风控规则" },
   { title: "观察池", fileName: "watchlist.md", output: "watchlist.html", description: "按方向维护的核心标的与验证规则" }
 ];
+const collections = [
+  { title: "交易计划", dir: "plans", index: "plans.html", description: "每日早盘生成的可执行交易计划" },
+  { title: "交易日志", dir: "trades", index: "trades.html", description: "真实或模拟交易执行后的纪律复盘" }
+];
 
 function escapeHtml(value) {
   return value
@@ -173,6 +177,32 @@ async function listReports() {
   return reports;
 }
 
+async function listCollectionEntries(collection) {
+  const dirPath = path.join(root, collection.dir);
+  if (!(await exists(dirPath))) return [];
+
+  const entries = await fs.readdir(dirPath, { withFileTypes: true });
+  const markdownFiles = entries
+    .filter((entry) => entry.isFile() && /^\d{4}-\d{2}-\d{2}.*\.md$/.test(entry.name))
+    .map((entry) => entry.name)
+    .sort()
+    .reverse();
+
+  const items = [];
+  for (const fileName of markdownFiles) {
+    const markdown = await fs.readFile(path.join(dirPath, fileName), "utf8");
+    const date = fileName.match(/^(\d{4}-\d{2}-\d{2})/)?.[1] ?? fileName.replace(/\.md$/, "");
+    items.push({
+      ...collection,
+      date,
+      fileName,
+      markdown,
+      url: `${collection.dir}/${date}.html`
+    });
+  }
+  return items;
+}
+
 function pageShell({ title, body, active = "", depth = 0 }) {
   const prefix = depth > 0 ? "../" : "";
   return `<!doctype html>
@@ -190,6 +220,8 @@ function pageShell({ title, body, active = "", depth = 0 }) {
       <a href="${prefix}index.html">全部报告</a>
       <a href="${prefix}rules.html">规则库</a>
       <a href="${prefix}watchlist.html">观察池</a>
+      <a href="${prefix}plans.html">交易计划</a>
+      <a href="${prefix}trades.html">交易日志</a>
     </nav>
   </header>
   <main>${body}</main>
@@ -198,7 +230,7 @@ function pageShell({ title, body, active = "", depth = 0 }) {
 </html>`;
 }
 
-function renderIndex(reports) {
+function renderIndex(reports, collectionGroups) {
   const grouped = new Map();
   for (const report of reports) {
     if (!grouped.has(report.date)) grouped.set(report.date, []);
@@ -232,6 +264,10 @@ function renderIndex(reports) {
         <span>${page.title}</span>
         <strong>${page.description}</strong>
       </a>`).join("")}
+      ${collectionGroups.map((group) => `<a class="system-card" href="${group.index}">
+        <span>${group.title}</span>
+        <strong>${group.description}，当前 ${group.items.length} 篇</strong>
+      </a>`).join("")}
     </section>
     ${days || "<p>暂无报告。</p>"}`
   });
@@ -262,11 +298,47 @@ function renderSystemPage(page, markdown) {
   return pageShell({ title: page.title, body });
 }
 
+function renderCollectionIndex(collection, items) {
+  const body = `<section class="hero">
+    <p>交易系统</p>
+    <h1>${collection.title}</h1>
+    <div class="meta">${items.length} 篇记录</div>
+  </section>
+  <section class="day">
+    <div class="report-grid">
+      ${items.map((item) => `<a class="report-card" href="${item.url}">
+        <span>${item.date}</span>
+        <strong>${item.fileName.replace(".md", "")}</strong>
+      </a>`).join("") || "<p>暂无记录。</p>"}
+    </div>
+  </section>`;
+  return pageShell({ title: collection.title, body });
+}
+
+function renderCollectionEntry(item) {
+  const body = `<article class="report">
+    <div class="report-title">
+      <p>${item.date}</p>
+      <h1>${item.title}</h1>
+    </div>
+    <div class="switcher">
+      <a href="../${item.index}">返回列表</a>
+    </div>
+    <div class="content">${markdownToHtml(item.markdown)}</div>
+  </article>`;
+  return pageShell({ title: `${item.date} ${item.title}`, body, depth: 1 });
+}
+
 async function main() {
   const reports = await listReports();
+  const collectionGroups = [];
+  for (const collection of collections) {
+    collectionGroups.push({ ...collection, items: await listCollectionEntries(collection) });
+  }
+
   await fs.rm(dist, { recursive: true, force: true });
   await fs.mkdir(path.join(dist, "assets"), { recursive: true });
-  await fs.writeFile(path.join(dist, "index.html"), renderIndex(reports));
+  await fs.writeFile(path.join(dist, "index.html"), renderIndex(reports, collectionGroups));
   await fs.writeFile(path.join(dist, "assets", "site.css"), await fs.readFile(path.join(root, "site", "site.css"), "utf8"));
 
   for (const page of systemPages) {
@@ -282,6 +354,15 @@ async function main() {
     await fs.mkdir(reportDir, { recursive: true });
     const nearby = reports.filter((item) => item.date === report.date);
     await fs.writeFile(path.join(reportDir, `${slugify(report.fileName)}.html`), renderReport(report, nearby));
+  }
+
+  for (const group of collectionGroups) {
+    await fs.writeFile(path.join(dist, group.index), renderCollectionIndex(group, group.items));
+    const collectionDir = path.join(dist, group.dir);
+    await fs.mkdir(collectionDir, { recursive: true });
+    for (const item of group.items) {
+      await fs.writeFile(path.join(collectionDir, `${item.date}.html`), renderCollectionEntry(item));
+    }
   }
 
   console.log(`Built ${reports.length} reports into ${dist}`);
