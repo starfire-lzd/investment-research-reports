@@ -24,6 +24,7 @@ import {
   getStateDir,
   getUpdates,
   loadDefaultAccount,
+  normalizeAccountAlias,
   normalizeAccountId,
   projectRoot,
   resolveAccount,
@@ -42,10 +43,10 @@ const paths = getPaths(stateDir);
 
 function usage() {
   console.log(`Usage:
-  node dist/weixin-bridge.js login
-  node dist/weixin-bridge.js import-openclaw
+  node dist/weixin-bridge.js login --alias ACCOUNT_ALIAS [--default]
+  node dist/weixin-bridge.js import-openclaw --alias ACCOUNT_ALIAS [--default]
   node dist/weixin-bridge.js status
-  node dist/weixin-bridge.js listen [--account ACCOUNT_ID] [--codex] [--write] [--once]
+  node dist/weixin-bridge.js listen [--account ACCOUNT_ALIAS|default] [--codex] [--write] [--once]
 
 Notes:
   - Default listen mode is local command mode.
@@ -70,6 +71,10 @@ function syncStandaloneEnv() {
 async function login(args = []) {
   await ensureState(stateDir);
   syncStandaloneEnv();
+  const alias = normalizeAccountAlias(argValue(args, "--alias"));
+  if (!alias) {
+    throw new Error("login 必须传入 --alias，例如：npm run login -- --alias research-bot --default");
+  }
   const botType = argValue(args, "--bot-type") || DEFAULT_ILINK_BOT_TYPE;
   const started = await startWeixinLoginWithQr({
     apiBaseUrl,
@@ -96,25 +101,35 @@ async function login(args = []) {
   const accountId = normalizeAccountId(result.accountId || "default@im.bot");
   const account = {
     accountId,
+    alias,
     name: argValue(args, "--account-name"),
     token: result.botToken,
     baseUrl: result.baseUrl || apiBaseUrl,
     userId: result.userId,
     savedAt: new Date().toISOString(),
   };
-  await saveAccount(stateDir, account, { makeDefault: args.includes("--default") });
+  const makeDefault = args.includes("--default");
+  await saveAccount(stateDir, account, { makeDefault });
   console.log(`登录成功：${accountId}`);
+  console.log(`别名：${alias}`);
+  console.log(`默认账号：${makeDefault ? "是" : "否"}`);
   if (account.name) console.log(`账号名：${account.name}`);
   if (account.userId) console.log(`扫码用户：${account.userId}`);
 }
 
-async function importOpenClaw() {
+async function importOpenClaw(args = []) {
   await ensureState(stateDir);
+  const alias = normalizeAccountAlias(argValue(args, "--alias"));
+  if (!alias) {
+    throw new Error("import-openclaw 必须传入 --alias，例如：npm run import-openclaw -- --alias research-bot --default");
+  }
   const account = await loadDefaultAccount(stateDir);
   if (!account?.token) {
     throw new Error("未找到可导入的 OpenClaw 微信登录凭据，请先运行 login。");
   }
-  await saveAccount(stateDir, account, { makeDefault: true });
+  const nextAccount = { ...account, alias };
+  const makeDefault = args.includes("--default");
+  await saveAccount(stateDir, nextAccount, { makeDefault });
 
   const legacyRoot = path.join(os.homedir(), ".openclaw", "openclaw-weixin", "accounts");
   const accountPaths = getAccountPaths(stateDir, account.accountId);
@@ -130,6 +145,8 @@ async function importOpenClaw() {
   }
 
   console.log(`已导入微信账号：${account.accountId}`);
+  console.log(`别名：${alias}`);
+  console.log(`默认账号：${makeDefault ? "是" : "否"}`);
   if (account.userId) console.log(`最近扫码用户：${account.userId}`);
 }
 
@@ -248,13 +265,14 @@ async function main() {
   try {
     if (!cmd || cmd === "help" || cmd === "--help") return usage();
     if (cmd === "login") return await login(args);
-    if (cmd === "import-openclaw") return await importOpenClaw();
+    if (cmd === "import-openclaw") return await importOpenClaw(args);
     if (cmd === "status") {
       const account = await loadDefaultAccount(stateDir);
       console.log({
         stateDir,
         hasAccount: Boolean(account?.token),
         accountId: account?.accountId,
+        alias: account?.alias,
         userId: account?.userId,
         baseUrl: account?.baseUrl,
       });
