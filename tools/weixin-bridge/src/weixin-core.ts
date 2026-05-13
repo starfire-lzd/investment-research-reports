@@ -434,7 +434,7 @@ export async function sendMediaMessage({ stateDir, account, to, message = "", me
       video_item: {
         media: {
           encrypt_query_param: uploaded.downloadEncryptedQueryParam,
-          aes_key: Buffer.from(uploaded.aeskey, "hex").toString("base64"),
+          aes_key: Buffer.from(uploaded.aeskey).toString("base64"),
           encrypt_type: 1,
         },
         video_size: uploaded.fileSizeCiphertext,
@@ -452,7 +452,7 @@ export async function sendMediaMessage({ stateDir, account, to, message = "", me
       image_item: {
         media: {
           encrypt_query_param: uploaded.downloadEncryptedQueryParam,
-          aes_key: Buffer.from(uploaded.aeskey, "hex").toString("base64"),
+          aes_key: Buffer.from(uploaded.aeskey).toString("base64"),
           encrypt_type: 1,
         },
         mid_size: uploaded.fileSizeCiphertext,
@@ -471,7 +471,7 @@ export async function sendMediaMessage({ stateDir, account, to, message = "", me
       file_item: {
         media: {
           encrypt_query_param: uploaded.downloadEncryptedQueryParam,
-          aes_key: Buffer.from(uploaded.aeskey, "hex").toString("base64"),
+          aes_key: Buffer.from(uploaded.aeskey).toString("base64"),
           encrypt_type: 1,
         },
         file_name: path.basename(localPath),
