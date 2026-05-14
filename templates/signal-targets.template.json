@@ -1,0 +1,20 @@
+{
+  "targetDate": "YYYY-MM-DD",
+  "t3Date": "YYYY-MM-DD",
+  "sources": [
+    "YYYY-MM-DD/盘前分析.md",
+    "YYYY-MM-DD/盘中分析.md",
+    "YYYY-MM-DD/尾盘分析.md",
+    "YYYY-MM-DD/盘后复盘.md",
+    "plans/YYYY-MM-DD_交易计划.md"
+  ],
+  "securities": [
+    {
+      "code": "000000",
+      "name": "标的名称",
+      "reason": "原始判断摘要",
+      "source": "盘前分析 / 盘中分析 / 尾盘分析 / 交易计划",
+      "conditionIds": []
+    }
+  ]
+}

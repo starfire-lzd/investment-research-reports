@@ -3,20 +3,26 @@ import path from "node:path";
 
 const root = process.cwd();
 const dist = path.join(root, "dist");
-const reportNames = ["盘前分析.md", "盘中分析.md", "盘后复盘.md"];
+const reportNames = ["盘前分析.md", "盘中分析.md", "尾盘分析.md", "盘后复盘.md"];
 const reportLabels = {
   "盘前分析.md": "盘前分析",
   "盘中分析.md": "盘中分析",
+  "尾盘分析.md": "尾盘分析",
   "盘后复盘.md": "盘后复盘"
 };
 const reportSlugs = {
   "盘前分析.md": "pre-market",
   "盘中分析.md": "intraday",
+  "尾盘分析.md": "late-market",
   "盘后复盘.md": "post-market"
 };
 const systemPages = [
+  { title: "AI投资体系", fileName: "AI投资体系.md", output: "system.html", description: "盘前、盘中、尾盘、复盘和回看的自动化闭环" },
   { title: "交易规则库", fileName: "rules.md", output: "rules.html", description: "长期可复用的判断、执行和风控规则" },
-  { title: "观察池", fileName: "watchlist.md", output: "watchlist.html", description: "按方向维护的核心标的与验证规则" }
+  { title: "观察池", fileName: "watchlist.md", output: "watchlist.html", description: "按方向维护的核心标的与验证规则" },
+  { title: "风险约束", fileName: "risk.md", output: "risk.html", description: "仓位、组合暴露、止损和禁止事项" },
+  { title: "规则候选池", fileName: "rules_proposals.md", output: "rules-proposals.html", description: "待连续验证后再升级的规则建议" },
+  { title: "判断条件评分", fileName: "判断条件评分.md", output: "signal-scores.html", description: "三交易日后回看得到的判断条件成功度" }
 ];
 const collections = [
   { title: "交易计划", dir: "plans", index: "plans.html", description: "每日早盘生成的可执行交易计划" },
@@ -220,6 +226,8 @@ function pageShell({ title, body, active = "", depth = 0 }) {
       <a href="${prefix}index.html">全部报告</a>
       <a href="${prefix}rules.html">规则库</a>
       <a href="${prefix}watchlist.html">观察池</a>
+      <a href="${prefix}risk.html">风险约束</a>
+      <a href="${prefix}signal-scores.html">条件评分</a>
       <a href="${prefix}plans.html">交易计划</a>
       <a href="${prefix}trades.html">交易日志</a>
     </nav>
@@ -256,7 +264,7 @@ function renderIndex(reports, collectionGroups) {
     title: "投研日报",
     body: `<section class="hero">
       <p>每日 A 股投研记录</p>
-      <h1>盘前、盘中、盘后复盘</h1>
+      <h1>盘前、盘中、尾盘、盘后复盘</h1>
       <div class="meta">${reports.length} 篇报告，${grouped.size} 个交易日</div>
     </section>
     <section class="system-links">

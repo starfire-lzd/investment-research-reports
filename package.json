@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "build": "node site/build-site.mjs",
+    "evaluate:signals": "node scripts/evaluate-signals.mjs",
     "weixin:login": "npm --prefix tools/weixin-bridge run login --",
     "weixin:import-openclaw": "npm --prefix tools/weixin-bridge run import-openclaw --",
     "weixin:status": "npm --prefix tools/weixin-bridge run status --",
