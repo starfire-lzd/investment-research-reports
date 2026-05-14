@@ -10,6 +10,7 @@ import {
   backoffDelayMs,
   defaultLongPollTimeoutMs,
   ensureState,
+  filterMarkdown,
   getContextTokens,
   getPaths,
   getStateDir,
@@ -40,6 +41,7 @@ const apiToken = process.env.WEIXIN_API_TOKEN || ""; // 可选；非空时强制
 let stopRequested = false;
 let httpServer: http.Server | null = null;
 let shutdownPromise: Promise<void> | null = null;
+const maxWechatTextLength = 3500;
 
 function usage() {
   console.log(`Usage:
@@ -228,7 +230,7 @@ async function handleInbox(req, res) {
 async function resolveSendText({ message, filePath }) {
   const inlineMessage = typeof message === "string" ? message : "";
   if (inlineMessage.trim()) {
-    return inlineMessage;
+    return { text: inlineMessage, localPath: "", fromFilePath: false };
   }
   const inputPath = typeof filePath === "string" ? filePath.trim() : "";
   if (!inputPath) {
@@ -253,13 +255,30 @@ async function resolveSendText({ message, filePath }) {
   if (!text.trim()) {
     throw Object.assign(new Error(`filePath 内容为空：${localPath}`), { statusCode: 400 });
   }
-  return text;
+  return { text, localPath, fromFilePath: true };
 }
 
 async function doSend({ to, message, filePath, account: accountId, markdown = false, reply = false }) {
   syncStandaloneEnv();
-  const text = await resolveSendText({ message, filePath });
-  if (text.length > 3500) {
+  const resolved = await resolveSendText({ message, filePath });
+  const text = markdown ? filterMarkdown(resolved.text) : resolved.text;
+  if (text.length > maxWechatTextLength) {
+    if (resolved.fromFilePath) {
+      const result = await doSendMedia({
+        to,
+        mediaUrl: "",
+        filePath: resolved.localPath,
+        account: accountId,
+        reply,
+      });
+      return {
+        ...result,
+        autoConvertedToMedia: true,
+        fallbackReason: "file-too-long",
+        textLength: text.length,
+        textLimit: maxWechatTextLength,
+      };
+    }
     throw Object.assign(new Error("message 超长（>3500 字符）"), { statusCode: 400 });
   }
   let account;
@@ -268,7 +287,7 @@ async function doSend({ to, message, filePath, account: accountId, markdown = fa
   } catch (err) {
     throw Object.assign(new Error(err.message), { statusCode: 404 });
   }
-  const result = await sendMessage({ stateDir, account, to, message: text, markdown, reply });
+  const result = await sendMessage({ stateDir, account, to, message: resolved.text, markdown, reply });
   runtime.outboundCount += 1;
   await appendLog(
     stateDir,

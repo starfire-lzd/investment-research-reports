@@ -448,6 +448,22 @@ export async function downloadRemoteMediaToTemp(url, stateDir) {
   await fs.writeFile(filePath, buf);
   return filePath;
 }
+
+async function normalizeAttachmentPathForWeixin(localPath, stateDir) {
+  const ext = path.extname(localPath).toLowerCase();
+  const originalName = path.basename(localPath);
+  if (ext !== ".md") {
+    return { uploadPath: localPath, displayName: originalName };
+  }
+  const dir = path.join(stateDir, "tmp");
+  await fs.mkdir(dir, { recursive: true });
+  const baseName = path.basename(localPath, ext) || "attachment";
+  const displayName = `${baseName}.txt`;
+  const uploadPath = path.join(dir, `weixin-attachment-${crypto.randomUUID()}-${displayName}`);
+  await fs.copyFile(localPath, uploadPath);
+  return { uploadPath, displayName };
+}
+
 export async function sendMediaMessage({ stateDir, account, to, message = "", mediaUrl, filePath = "", markdown = false, reply = false }) {
   const target = to || account.userId;
   if (!target) throw new Error("缺少目标 userId（账号未提供默认 userId，请显式传 to）");
@@ -460,9 +476,10 @@ export async function sendMediaMessage({ stateDir, account, to, message = "", me
   if (localPath.startsWith("file://")) localPath = new URL(localPath).pathname;
   if (!path.isAbsolute(localPath)) localPath = path.resolve(localPath);
   await fs.access(localPath);
+  const attachment = await normalizeAttachmentPathForWeixin(localPath, stateDir);
 
   const text = markdown ? filterMarkdown(message) : String(message || "");
-  const mime = mimeFromFilename(localPath);
+  const mime = mimeFromFilename(attachment.uploadPath);
   syncStandaloneEnv(stateDir);
   const uploadOpts = {
     baseUrl: account.baseUrl || apiBaseUrl,
@@ -471,7 +488,7 @@ export async function sendMediaMessage({ stateDir, account, to, message = "", me
   let mediaItem;
   if (mime.startsWith("video/")) {
     const uploaded = await uploadVideoToWeixin({
-      filePath: localPath,
+      filePath: attachment.uploadPath,
       toUserId: target,
       opts: uploadOpts,
       cdnBaseUrl,
@@ -489,7 +506,7 @@ export async function sendMediaMessage({ stateDir, account, to, message = "", me
     };
   } else if (mime.startsWith("image/")) {
     const uploaded = await uploadFileToWeixin({
-      filePath: localPath,
+      filePath: attachment.uploadPath,
       toUserId: target,
       opts: uploadOpts,
       cdnBaseUrl,
@@ -507,8 +524,8 @@ export async function sendMediaMessage({ stateDir, account, to, message = "", me
     };
   } else {
     const uploaded = await uploadFileAttachmentToWeixin({
-      filePath: localPath,
-      fileName: path.basename(localPath),
+      filePath: attachment.uploadPath,
+      fileName: attachment.displayName,
       toUserId: target,
       opts: uploadOpts,
       cdnBaseUrl,
@@ -521,7 +538,7 @@ export async function sendMediaMessage({ stateDir, account, to, message = "", me
           aes_key: Buffer.from(uploaded.aeskey).toString("base64"),
           encrypt_type: 1,
         },
-        file_name: path.basename(localPath),
+        file_name: attachment.displayName,
         len: String(uploaded.fileSize),
       },
     };
