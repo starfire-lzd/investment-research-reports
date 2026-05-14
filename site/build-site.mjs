@@ -16,11 +16,13 @@ const reportSlugs = {
 };
 const systemPages = [
   { title: "交易规则库", fileName: "rules.md", output: "rules.html", description: "长期可复用的判断、执行和风控规则" },
-  { title: "观察池", fileName: "watchlist.md", output: "watchlist.html", description: "按方向维护的核心标的与验证规则" }
+  { title: "观察池", fileName: "watchlist.md", output: "watchlist.html", description: "按方向维护的核心标的与验证规则" },
+  { title: "当前持仓", fileName: "positions/当前持仓.md", output: "positions-current.html", description: "每日分析使用的持仓台账与组合暴露" }
 ];
 const collections = [
   { title: "交易计划", dir: "plans", index: "plans.html", description: "每日早盘生成的可执行交易计划" },
-  { title: "交易日志", dir: "trades", index: "trades.html", description: "真实或模拟交易执行后的纪律复盘" }
+  { title: "交易日志", dir: "trades", index: "trades.html", description: "真实或模拟交易执行后的纪律复盘" },
+  { title: "持仓快照", dir: "positions", index: "positions.html", description: "每日持仓暴露与账户截图记录" }
 ];
 
 function escapeHtml(value) {
@@ -220,6 +222,8 @@ function pageShell({ title, body, active = "", depth = 0 }) {
       <a href="${prefix}index.html">全部报告</a>
       <a href="${prefix}rules.html">规则库</a>
       <a href="${prefix}watchlist.html">观察池</a>
+      <a href="${prefix}positions-current.html">当前持仓</a>
+      <a href="${prefix}positions.html">持仓快照</a>
       <a href="${prefix}plans.html">交易计划</a>
       <a href="${prefix}trades.html">交易日志</a>
     </nav>
