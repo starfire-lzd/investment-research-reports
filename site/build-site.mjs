@@ -21,6 +21,7 @@ const systemPages = [
   { title: "交易规则库", fileName: "rules.md", output: "rules.html", description: "长期可复用的判断、执行和风控规则" },
   { title: "观察池", fileName: "watchlist.md", output: "watchlist.html", description: "按方向维护的核心标的与验证规则" },
   { title: "风险约束", fileName: "risk.md", output: "risk.html", description: "仓位、组合暴露、止损和禁止事项" },
+  { title: "自主研究队列", fileName: "research_queue.md", output: "research.html", description: "正在验证的市场假设和研究任务" },
   { title: "规则候选池", fileName: "rules_proposals.md", output: "rules-proposals.html", description: "待连续验证后再升级的规则建议" },
   { title: "判断条件评分", fileName: "判断条件评分.md", output: "signal-scores.html", description: "三交易日后回看得到的判断条件成功度" }
 ];
@@ -227,6 +228,7 @@ function pageShell({ title, body, active = "", depth = 0 }) {
       <a href="${prefix}rules.html">规则库</a>
       <a href="${prefix}watchlist.html">观察池</a>
       <a href="${prefix}risk.html">风险约束</a>
+      <a href="${prefix}research.html">研究队列</a>
       <a href="${prefix}signal-scores.html">条件评分</a>
       <a href="${prefix}plans.html">交易计划</a>
       <a href="${prefix}trades.html">交易日志</a>
