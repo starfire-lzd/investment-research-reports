@@ -1,0 +1,17 @@
+{
+  "generatedAt": "2026-05-15T19:00:00+08:00",
+  "targetDate": "2026-05-15",
+  "t3Date": "2026-05-12",
+  "status": "error",
+  "method": "npm run evaluate:signals -- 2026-05-15",
+  "error": {
+    "code": "ENOTFOUND",
+    "message": "getaddrinfo ENOTFOUND push2.eastmoney.com"
+  },
+  "notes": [
+    "The evaluation script failed before writing price evidence.",
+    "Do not infer or fabricate T-3 close prices, current prices, or return percentages from this file."
+  ],
+  "securities": [],
+  "indexes": []
+}
