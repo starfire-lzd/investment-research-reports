@@ -5,14 +5,10 @@ import os from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import {
-  DEFAULT_ILINK_BOT_TYPE,
   displayQRCode,
-  startWeixinLoginWithQr,
-  waitForWeixinLogin,
 } from "@tencent-weixin/openclaw-weixin/dist/src/auth/login-qr.js";
 
 import {
-  apiBaseUrl,
   defaultLongPollTimeoutMs,
   maxConsecutiveFailures,
   backoffDelayMs,
@@ -25,7 +21,6 @@ import {
   getUpdates,
   loadDefaultAccount,
   normalizeAccountAlias,
-  normalizeAccountId,
   projectRoot,
   resolveAccount,
   saveAccount,
@@ -36,10 +31,22 @@ import {
   writeInbox,
   writeJson,
 } from "./weixin-core.js";
+import { awaitLoginSession, startLoginSession } from "./weixin-login.js";
 
 const root = projectRoot;
 const stateDir = getStateDir(root);
 const paths = getPaths(stateDir);
+
+type CodexOptions = {
+  write: boolean;
+};
+
+type ListenOptions = {
+  accountId?: string;
+  codex: boolean;
+  write: boolean;
+  once: boolean;
+};
 
 function usage() {
   console.log(`Usage:
@@ -55,7 +62,7 @@ Notes:
   - 发送消息仅支持 HTTP API（node dist/index.js server）。`);
 }
 
-function argValue(args, name) {
+function argValue(args: string[], name: string) {
   const i = args.indexOf(name);
   if (i >= 0) return args[i + 1];
   const eq = args.find((a) => a.startsWith(`${name}=`));
@@ -75,46 +82,23 @@ async function login(args = []) {
   if (!alias) {
     throw new Error("login 必须传入 --alias，例如：npm run login -- --alias research-bot --default");
   }
-  const botType = argValue(args, "--bot-type") || DEFAULT_ILINK_BOT_TYPE;
-  const started = await startWeixinLoginWithQr({
-    apiBaseUrl,
-    botType,
-  });
-  if (!started?.qrcodeUrl || !started?.sessionKey) {
-    throw new Error(`二维码响应异常：${started?.message || "未返回二维码"}`);
-  }
-  console.log("请用手机微信扫描二维码：");
-  await displayQRCode(started.qrcodeUrl);
-  const result = await waitForWeixinLogin({
-    sessionKey: started.sessionKey,
-    apiBaseUrl,
-    botType,
-    timeoutMs: 5 * 60_000,
-  });
-  if (result.alreadyConnected) {
-    console.log(result.message);
-    return;
-  }
-  if (!result.connected || !result.botToken) {
-    throw new Error(result.message || "等待扫码超时。");
-  }
-  const accountId = normalizeAccountId(result.accountId || "default@im.bot");
-  const account = {
-    accountId,
+  const session = await startLoginSession(stateDir, {
     alias,
-    name: argValue(args, "--account-name"),
-    token: result.botToken,
-    baseUrl: result.baseUrl || apiBaseUrl,
-    userId: result.userId,
-    savedAt: new Date().toISOString(),
-  };
-  const makeDefault = args.includes("--default");
-  await saveAccount(stateDir, account, { makeDefault });
-  console.log(`登录成功：${accountId}`);
-  console.log(`别名：${alias}`);
-  console.log(`默认账号：${makeDefault ? "是" : "否"}`);
-  if (account.name) console.log(`账号名：${account.name}`);
-  if (account.userId) console.log(`扫码用户：${account.userId}`);
+    accountName: argValue(args, "--account-name"),
+    botType: argValue(args, "--bot-type"),
+    makeDefault: args.includes("--default"),
+  });
+  console.log("请用手机微信扫描二维码：");
+  await displayQRCode(session.qrcodeUrl);
+  const completed = await awaitLoginSession(stateDir, session.sessionId);
+  if (completed.status !== "succeeded" || !completed.accountId) {
+    throw new Error(completed.error || "等待扫码超时。");
+  }
+  console.log(`登录成功：${completed.accountId}`);
+  console.log(`别名：${completed.alias}`);
+  console.log(`默认账号：${completed.makeDefault ? "是" : "否"}`);
+  if (completed.accountName) console.log(`账号名：${completed.accountName}`);
+  if (completed.userId) console.log(`扫码用户：${completed.userId}`);
 }
 
 async function importOpenClaw(args = []) {
@@ -150,7 +134,7 @@ async function importOpenClaw(args = []) {
   if (account.userId) console.log(`最近扫码用户：${account.userId}`);
 }
 
-function localCommandReply(text) {
+function localCommandReply(text: string) {
   const trimmed = text.trim();
   if (!trimmed || trimmed === "帮助" || trimmed.toLowerCase() === "help") {
     return [
@@ -176,7 +160,7 @@ function localCommandReply(text) {
   return "已收到并保存到本地 inbox。发送“帮助”查看可用命令。";
 }
 
-async function runCodex(text, opts) {
+async function runCodex(text: string, opts: CodexOptions) {
   const prompt = [
     "你是投研项目的本地 Codex 助手。用户通过微信发来消息。",
     "请简洁回答。除非用户明确要求修改文件，否则只做分析和说明。",
@@ -203,7 +187,7 @@ async function runCodex(text, opts) {
   return (await fs.readFile(outFile, "utf8")).trim();
 }
 
-async function listen(opts) {
+async function listen(opts: ListenOptions) {
   await ensureState(stateDir);
   syncStandaloneEnv();
   const account = await resolveAccount(stateDir, opts.accountId);
@@ -246,7 +230,7 @@ async function listen(opts) {
       console.log(`inbound ${from}: ${text}`);
       await appendLog(stateDir, `inbound from=${from} file=${saved}`);
 
-      let reply;
+      let reply = "";
       try {
         reply = opts.codex ? await runCodex(text, opts) : localCommandReply(text);
       } catch (err) {

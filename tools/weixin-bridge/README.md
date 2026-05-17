@@ -72,10 +72,15 @@ npm run server
 常用接口：
 
 - `GET /health`
+- `GET /admin/ui`
 - `GET /status`
 - `GET /accounts`
 - `GET /contacts`
 - `GET /inbox?limit=50&since=ISO`
+- `GET /admin/login/sessions`
+- `GET /admin/login/session/:id`
+- `GET /admin/login/alias/:alias`
+- `POST /admin/login/start`
 - `POST /send`
 - `POST /send/markdown`
 - `POST /send/batch`
@@ -127,6 +132,118 @@ npm run server
 - `reply: true`
 - `hasContextToken: true`
 - `usedContextToken: true`
+
+## Docker 部署
+
+现在支持把 bridge 作为 Docker 服务部署到远程服务器。
+
+容器特性：
+
+- 服务入口仍然是 `node dist/index.js server`
+- 运行态统一持久化到容器内 `/data/state`
+- 默认同时提供业务接口和 `/admin/*` 登录管理接口
+- 容器首次启动时即使还没有登录账号，也不会退出；完成扫码登录后会自动开始轮询
+
+### 构建镜像
+
+```bash
+docker build -t investment-research-weixin-bridge ./tools/weixin-bridge
+```
+
+### 使用 Compose
+
+根目录已提供 `docker-compose.weixin-bridge.yml`：
+
+```bash
+export WEIXIN_API_TOKEN="replace-with-strong-token"
+export WEIXIN_ADMIN_TOKEN="replace-with-admin-token"
+docker compose -f docker-compose.weixin-bridge.yml up -d --build
+```
+
+说明：
+
+- 如果不设置 `WEIXIN_ADMIN_TOKEN`，服务端会自动回退使用 `WEIXIN_API_TOKEN`
+- 运行态默认使用 named volume `investment-research-weixin-bridge-state`
+- 默认暴露 `8787` 端口，可通过 `WEIXIN_BRIDGE_PORT` 覆盖宿主机端口
+- Compose 默认接入外部 Docker 网络 `openwrt-clash-config_clash_bridge`，可通过 `WEIXIN_DOCKER_NETWORK` 覆盖
+
+### 服务端扫码登录
+
+容器启动后，通过管理接口发起登录：
+
+```bash
+curl -X POST http://127.0.0.1:8787/admin/login/start \
+  -H "Authorization: Bearer ${WEIXIN_ADMIN_TOKEN}" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "alias": "research-bot",
+    "default": true
+  }'
+```
+
+返回示例：
+
+```json
+{
+  "ok": true,
+  "session": {
+    "sessionId": "uuid",
+    "alias": "research-bot",
+    "status": "pending",
+    "qrcodeUrl": "https://...",
+    "startedAt": "2026-05-16T00:00:00.000Z",
+    "expiresAt": "2026-05-16T00:05:00.000Z"
+  },
+  "qrcodeUrl": "https://..."
+}
+```
+
+扫码后轮询状态：
+
+```bash
+curl http://127.0.0.1:8787/admin/login/session/<sessionId> \
+  -H "Authorization: Bearer ${WEIXIN_ADMIN_TOKEN}"
+```
+
+可用状态：
+
+- `pending`：等待扫码
+- `succeeded`：登录成功，账号已写入 `state/accounts/`
+- `expired`：二维码超时或服务重启
+- `failed`：登录失败
+
+查看最近登录会话：
+
+```bash
+curl http://127.0.0.1:8787/admin/login/sessions \
+  -H "Authorization: Bearer ${WEIXIN_ADMIN_TOKEN}"
+```
+
+按 alias 查询最近一次登录状态：
+
+```bash
+curl http://127.0.0.1:8787/admin/login/alias/research-bot \
+  -H "Authorization: Bearer ${WEIXIN_ADMIN_TOKEN}"
+```
+
+## 内置管理台
+
+服务内置了一个轻量管理台：
+
+```bash
+open http://127.0.0.1:8787/admin/ui
+```
+
+当前首版能力：
+
+- 登录管理：发起扫码登录、按 alias 轮询最近一次登录状态
+- 状态总览：查看运行态与账号列表
+- 消息发送：支持文本、Markdown 和媒体发送
+
+说明：
+
+- 页面本身可以直接打开，但真正的数据访问仍需要手动填写 `Admin Token` / `API Token`
+- Token 仅保存在浏览器 `localStorage`
 
 ## HTTP 示例
 

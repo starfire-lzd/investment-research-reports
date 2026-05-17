@@ -48,6 +48,11 @@ npm run evaluate:signals
 
 微信桥接工具位于 `tools/weixin-bridge/`，不依赖 OpenClaw 常驻进程。运行状态、日志、收件箱和临时文件统一保存在 `tools/weixin-bridge/state/`，该目录不会提交到 Git。
 
+当前支持两种运行模式：
+
+- 本地 macOS `launchd` 服务
+- 远程 Docker 服务
+
 首次拉取后，请先为子项目单独安装依赖：
 
 ```bash
@@ -74,4 +79,73 @@ npm run weixin:service:uninstall
 ```bash
 npm run weixin:service:uninstall
 npm run weixin:service:install -- --codex
+```
+
+## Docker 化微信桥接
+
+如果你希望把微信桥接部署到服务器，而不是在本地常驻运行，可使用根目录的 `docker-compose.weixin-bridge.yml`。
+
+启动：
+
+```bash
+export WEIXIN_API_TOKEN="replace-with-strong-token"
+export WEIXIN_ADMIN_TOKEN="replace-with-admin-token"
+docker compose -f docker-compose.weixin-bridge.yml up -d --build
+```
+
+说明：
+
+- 容器会把 `tools/weixin-bridge/state/` 挂载为持久化 volume
+- 服务默认监听容器内 `0.0.0.0:8787`
+- `/admin/*` 用于远程扫码登录管理；如果未设置 `WEIXIN_ADMIN_TOKEN`，服务会自动回退为 `WEIXIN_API_TOKEN`
+- 容器首次启动时可以没有任何已登录账号；扫码完成后会自动开始轮询
+- Compose 默认接入外部 Docker 网络 `openwrt-clash-config_clash_bridge`，可通过 `WEIXIN_DOCKER_NETWORK` 覆盖
+
+发起一次服务端扫码登录：
+
+```bash
+curl -X POST http://127.0.0.1:8787/admin/login/start \
+  -H "Authorization: Bearer ${WEIXIN_ADMIN_TOKEN}" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "alias": "research-bot",
+    "default": true
+  }'
+```
+
+登录状态查询：
+
+```bash
+curl http://127.0.0.1:8787/admin/login/session/<sessionId> \
+  -H "Authorization: Bearer ${WEIXIN_ADMIN_TOKEN}"
+```
+
+按 alias 查询最近一次登录状态：
+
+```bash
+curl http://127.0.0.1:8787/admin/login/alias/research-bot \
+  -H "Authorization: Bearer ${WEIXIN_ADMIN_TOKEN}"
+```
+
+内置管理台：
+
+```bash
+open http://127.0.0.1:8787/admin/ui
+```
+
+首版已包含：
+
+- 登录管理
+- 状态总览
+- 消息发送
+
+业务接口仍保持不变，例如：
+
+```bash
+curl -X POST http://127.0.0.1:8787/send \
+  -H "Authorization: Bearer ${WEIXIN_API_TOKEN}" \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "message": "你好，这是主动发送"
+  }'
 ```

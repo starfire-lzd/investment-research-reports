@@ -18,6 +18,7 @@ import {
   listAccounts,
   listInbox,
   maxConsecutiveFailures,
+  normalizeAccountAlias,
   projectRoot,
   resolveAccount,
   retryDelayMs,
@@ -30,6 +31,15 @@ import {
   writeJson,
 } from "./weixin-core.js";
 import { notifyStart, notifyStop } from "@tencent-weixin/openclaw-weixin/dist/src/api/api.js";
+import {
+  awaitLoginSession,
+  expirePendingLoginSessions,
+  getLoginSession,
+  listLoginSessions,
+  publicLoginSession,
+  startLoginSession,
+} from "./weixin-login.js";
+import { renderAdminUiHtml } from "./weixin-admin-ui.js";
 
 const root = projectRoot;
 const stateDir = getStateDir(root);
@@ -38,10 +48,12 @@ const paths = getPaths(stateDir);
 const port = Number(process.env.WEIXIN_API_PORT || 8787);
 const host = process.env.WEIXIN_API_HOST || "127.0.0.1";
 const apiToken = process.env.WEIXIN_API_TOKEN || ""; // 可选；非空时强制鉴权
+const adminToken = process.env.WEIXIN_ADMIN_TOKEN || apiToken || "";
 let stopRequested = false;
 let httpServer: http.Server | null = null;
 let shutdownPromise: Promise<void> | null = null;
 const maxWechatTextLength = 3500;
+const activeListenLoops = new Set<string>();
 
 function usage() {
   console.log(`Usage:
@@ -51,14 +63,20 @@ Env:
   WEIXIN_API_PORT   监听端口，默认 8787
   WEIXIN_API_HOST   绑定地址，默认 127.0.0.1
   WEIXIN_API_TOKEN  非空时，所有请求必须带 Authorization: Bearer <token>
+  WEIXIN_ADMIN_TOKEN 非空时，/admin/* 请求必须带 Authorization: Bearer <token>
   WEIXIN_BRIDGE_STATE  状态目录，默认 <repo>/tools/weixin-bridge/state
 
 Endpoints:
   GET  /health
+  GET  /admin/ui
   GET  /status
   GET  /accounts
   GET  /contacts
   GET  /inbox?limit=50&since=ISO
+  GET  /admin/login/sessions
+  GET  /admin/login/session/:id
+  GET  /admin/login/alias/:alias
+  POST /admin/login/start body: { alias, default?, accountName?, botType? }
   POST /send         body: { to?, message, account?, reply? }
   POST /send/markdown body: { to?, message, account?, reply? }
   POST /send/batch   body: { messages: [{ to?, message, account?, reply? }] }
@@ -70,6 +88,7 @@ const runtime = {
   listenEnabled: true,
   codex: false,
   write: false,
+  autoReply: false,
   listenState: "idle",
   lastListenError: null,
   inboundCount: 0,
@@ -110,6 +129,14 @@ function authorized(req) {
   return url.searchParams.get("token") === apiToken;
 }
 
+function adminAuthorized(req) {
+  if (!adminToken) return true;
+  const header = req.headers["authorization"] || "";
+  if (header === `Bearer ${adminToken}`) return true;
+  const url = new URL(req.url, `http://${req.headers.host || "localhost"}`);
+  return url.searchParams.get("token") === adminToken;
+}
+
 function sendJson(res, status, body) {
   const text = JSON.stringify(body, null, 2);
   res.writeHead(status, {
@@ -117,6 +144,14 @@ function sendJson(res, status, body) {
     "Content-Length": Buffer.byteLength(text),
   });
   res.end(text);
+}
+
+function sendHtml(res, status, html) {
+  res.writeHead(status, {
+    "Content-Type": "text/html; charset=utf-8",
+    "Content-Length": Buffer.byteLength(html),
+  });
+  res.end(html);
 }
 
 function sendError(res, status, message, extra = {}) {
@@ -225,6 +260,94 @@ async function handleInbox(req, res) {
       messageId: m.raw?.message_id,
     })),
   });
+}
+
+async function handleAdminLoginSessions(req, res) {
+  const url = new URL(req.url, `http://${req.headers.host || "localhost"}`);
+  const limit = Math.min(Number(url.searchParams.get("limit") || 20), 100);
+  const sessions = await listLoginSessions(stateDir, { limit });
+  sendJson(res, 200, {
+    ok: true,
+    count: sessions.length,
+    sessions: sessions.map((session) => publicLoginSession(session)),
+  });
+}
+
+async function handleAdminLoginSession(req, res, sessionId) {
+  const session = await getLoginSession(stateDir, sessionId);
+  if (!session) {
+    return sendError(res, 404, `未找到登录会话：${sessionId}`);
+  }
+  sendJson(res, 200, {
+    ok: true,
+    session: publicLoginSession(session),
+  });
+}
+
+async function handleAdminLoginAlias(req, res, alias) {
+  const normalizedAlias = normalizeAccountAlias(alias);
+  if (!normalizedAlias) {
+    return sendError(res, 400, "alias 不能为空");
+  }
+  const sessions = await listLoginSessions(stateDir, { limit: 200 });
+  const latest = sessions.find((session) => normalizeAccountAlias(session.alias) === normalizedAlias) || null;
+  if (!latest) {
+    return sendError(res, 404, `未找到 alias=${normalizedAlias} 的登录会话`);
+  }
+  sendJson(res, 200, {
+    ok: true,
+    alias: normalizedAlias,
+    session: publicLoginSession(latest),
+  });
+}
+
+async function startLoginWorkflow(body) {
+  const session = await startLoginSession(stateDir, {
+    alias: body?.alias,
+    accountName: body?.accountName,
+    botType: body?.botType,
+    makeDefault: body?.default,
+  });
+  await appendLog(stateDir, `login session start id=${session.sessionId} alias=${session.alias}`);
+  const waiter = awaitLoginSession(stateDir, session.sessionId)
+    .then(async (completed) => {
+      await appendLog(
+        stateDir,
+        `login session finish id=${session.sessionId} status=${completed.status} alias=${completed.alias} account=${completed.accountId || "-"}`,
+      );
+      if (completed.status === "succeeded" && runtime.listenEnabled) {
+        await startListenLoops({
+          codex: runtime.codex,
+          write: runtime.write,
+          autoReply: runtime.autoReply,
+        });
+      }
+      return completed;
+    })
+    .catch(async (err) => {
+      await appendLog(stateDir, `login session finish id=${session.sessionId} status=failed err=${String(err).slice(0, 800)}`);
+    });
+  void waiter;
+  return session;
+}
+
+async function handleAdminLoginStart(req, res) {
+  let body;
+  try {
+    body = await readBody(req);
+  } catch (err) {
+    return sendError(res, 400, err.message);
+  }
+  try {
+    const session = await startLoginWorkflow(body);
+    sendJson(res, 200, {
+      ok: true,
+      session: publicLoginSession(session),
+      qrcodeUrl: session.qrcodeUrl,
+    });
+  } catch (err) {
+    sendError(res, err.statusCode || 400, String(err.message || err));
+  }
 }
 
 async function resolveSendText({ message, filePath }) {
@@ -400,6 +523,28 @@ async function route(req, res) {
     return sendJson(res, 200, { ok: true, startedAt });
   }
 
+  if ((pathname === "/admin/ui" || pathname === "/admin/ui/") && req.method === "GET") {
+    return sendHtml(res, 200, renderAdminUiHtml());
+  }
+
+  if (
+    pathname === "/admin/login/sessions" ||
+    pathname.startsWith("/admin/login/session/") ||
+    pathname.startsWith("/admin/login/alias/") ||
+    pathname === "/admin/login/start"
+  ) {
+    if (!adminAuthorized(req)) {
+      return sendError(res, 401, "unauthorized: /admin/* 需要 Bearer admin token");
+    }
+    if (pathname === "/admin/login/sessions" && req.method === "GET") return await handleAdminLoginSessions(req, res);
+    if (pathname === "/admin/login/start" && req.method === "POST") return await handleAdminLoginStart(req, res);
+    const sessionMatch = pathname.match(/^\/admin\/login\/session\/([^/]+)$/);
+    if (sessionMatch && req.method === "GET") return await handleAdminLoginSession(req, res, sessionMatch[1]);
+    const aliasMatch = pathname.match(/^\/admin\/login\/alias\/([^/]+)$/);
+    if (aliasMatch && req.method === "GET") return await handleAdminLoginAlias(req, res, aliasMatch[1]);
+    return sendError(res, 404, `not found: ${req.method} ${pathname}`);
+  }
+
   if (!authorized(req)) {
     return sendError(res, 401, "unauthorized: 设置环境变量 WEIXIN_API_TOKEN 后需要 Bearer token");
   }
@@ -432,8 +577,12 @@ async function startHttpServer() {
     });
   });
   const tokenHint = apiToken ? "with API token (Bearer required)" : "no API token (open on bind interface)";
-  console.log(`weixin HTTP server listening on http://${host}:${port} (${tokenHint})`);
-  await appendLog(stateDir, `http server start host=${host} port=${port} token=${apiToken ? "yes" : "no"}`);
+  const adminHint = adminToken ? "admin protected" : "admin open";
+  console.log(`weixin HTTP server listening on http://${host}:${port} (${tokenHint}, ${adminHint})`);
+  await appendLog(
+    stateDir,
+    `http server start host=${host} port=${port} token=${apiToken ? "yes" : "no"} adminToken=${adminToken ? "yes" : "no"}`,
+  );
   httpServer = server;
   return server;
 }
@@ -486,6 +635,7 @@ async function runCodex(text, opts) {
 
 async function listenAccountLoop(account, opts) {
   syncStandaloneEnv();
+  activeListenLoops.add(account.accountId);
   runtime.accounts[account.accountId] = {
     listenState: "idle",
     inboundCount: 0,
@@ -558,22 +708,25 @@ async function listenAccountLoop(account, opts) {
     }
   }
   runtime.accounts[account.accountId].listenState = "stopped";
+  activeListenLoops.delete(account.accountId);
   await notifyLifecycle(account, "stop");
 }
 
-async function startListenLoop(opts) {
+async function startListenLoops(opts) {
   syncStandaloneEnv();
   await ensureState(stateDir);
   const accounts = await listAccounts(stateDir);
   if (!accounts.length) {
-    const account = await resolveAccount(stateDir);
-    await listenAccountLoop(account, opts);
+    runtime.listenState = "idle";
+    await appendLog(stateDir, "listen idle no-account");
     return;
   }
   await writeJson(paths.accountFile, accounts[0]);
   for (const account of accounts) {
+    if (activeListenLoops.has(account.accountId)) continue;
     listenAccountLoop(account, opts).catch(async (err) => {
       runtime.accounts[account.accountId] = runtime.accounts[account.accountId] || {};
+      activeListenLoops.delete(account.accountId);
       runtime.accounts[account.accountId].listenState = "crashed";
       runtime.accounts[account.accountId].lastListenError = { message: String(err).slice(0, 800), at: new Date().toISOString() };
       await appendLog(stateDir, `listen loop crashed account=${account.accountId} err=${String(err).slice(0, 800)}`);
@@ -621,14 +774,15 @@ export async function mainServer(argv = process.argv.slice(2)) {
   runtime.listenEnabled = !args.includes("--no-listen");
   runtime.codex = args.includes("--codex");
   runtime.write = args.includes("--write");
-  const autoReply = args.includes("--auto-reply") || runtime.codex;
+  runtime.autoReply = args.includes("--auto-reply") || runtime.codex;
 
   await ensureState(stateDir);
+  await expirePendingLoginSessions(stateDir);
   installSignalHandlers();
   await startHttpServer();
 
   if (runtime.listenEnabled) {
-    startListenLoop({ codex: runtime.codex, write: runtime.write, autoReply }).catch(async (err) => {
+    startListenLoops({ codex: runtime.codex, write: runtime.write, autoReply: runtime.autoReply }).catch(async (err) => {
       console.error("listen loop crashed:", err);
       await appendLog(stateDir, `listen loop crashed err=${String(err).slice(0, 800)}`);
       process.exit(1);

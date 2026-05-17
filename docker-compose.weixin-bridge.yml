@@ -1,0 +1,28 @@
+services:
+  weixin-bridge:
+    build:
+      context: ./tools/weixin-bridge
+    container_name: investment-research-weixin-bridge
+    restart: unless-stopped
+    ports:
+      - "${WEIXIN_BRIDGE_PORT:-8787}:8787"
+    environment:
+      TZ: Asia/Shanghai
+      WEIXIN_API_HOST: 0.0.0.0
+      WEIXIN_API_PORT: 8787
+      WEIXIN_API_TOKEN: ${WEIXIN_API_TOKEN:?set WEIXIN_API_TOKEN}
+      WEIXIN_ADMIN_TOKEN: ${WEIXIN_ADMIN_TOKEN:-}
+      WEIXIN_BRIDGE_STATE: /data/state
+    volumes:
+      - weixin_bridge_state:/data/state
+    networks:
+      - bridge_net
+
+networks:
+  bridge_net:
+    name: ${WEIXIN_DOCKER_NETWORK:-openwrt-clash-config_clash_bridge}
+    external: true
+
+volumes:
+  weixin_bridge_state:
+    name: ${WEIXIN_BRIDGE_VOLUME:-investment-research-weixin-bridge-state}
