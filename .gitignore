@@ -5,3 +5,8 @@ dist/
 .playwright-cli/
 output/playwright/
 tools/weixin-bridge/state/
+.venv/
+.env
+logs/
+log/
+tailscale-proxy/
