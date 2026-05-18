@@ -1,0 +1,101 @@
+#!/usr/bin/env python3
+"""
+xtdata - 行情数据命令行工具
+
+动态映射到 xtdata API 函数。
+
+参数规则:
+    - 工具参数（--host, --port, --limit 等）必须放在 command 之前
+    - API 函数参数放在 command 之后
+
+使用示例:
+    # 工具参数在 command 之前
+    xtdata --limit 100 get_stock_list_in_sector --sector-name "沪深A股"
+    xtdata --host 192.168.1.100 get_full_tick --codes "000001.SZ"
+
+    # 使用环境变量配置连接，只传 API 参数
+    xtdata get_market_data_ex --codes "000001.SZ" --period 1d
+"""
+
+import sys
+import os
+import argparse
+from .common import (
+    create_client, parse_kv_args, preprocess_params,
+    format_output, add_global_args, extract_global_args, ENV_FORMAT
+)
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        prog="xtdata",
+        description="xtquant 行情数据命令行工具",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+参数规则:
+  工具参数 (--host, --port, --limit 等) 必须放在 command 之前
+  API 函数参数放在 command 之后
+
+限制:
+  不支持以 subscribe 开头的命令（订阅功能需要回调）
+  不支持 callback 参数（回调功能需要使用 Python API）
+
+示例:
+  xtdata --limit 100 get_stock_list_in_sector --sector-name "沪深A股"
+  xtdata --host 192.168.1.100 get_full_tick --codes "000001.SZ"
+        """
+    )
+    add_global_args(parser)
+    parser.add_argument("command", help="API函数名")
+    parser.add_argument("args", nargs=argparse.REMAINDER, help="函数参数 (--key value)")
+
+    args = parser.parse_args()
+
+    # 补充环境变量默认值
+    output_format = args.output_format or os.environ.get(ENV_FORMAT, "text")
+
+    # 提取后置的全局参数（支持放在 command 之后）
+    args.args, global_overrides = extract_global_args(args.args)
+    if global_overrides:
+        if 'compact' in global_overrides:
+            args.compact = True
+        if 'verbose' in global_overrides or 'v' in global_overrides:
+            args.verbose = True
+        if 'output' in global_overrides or 'o' in global_overrides:
+            args.output = global_overrides.get('output') or global_overrides.get('o')
+        if 'limit' in global_overrides or 'n' in global_overrides:
+            args.limit = int(global_overrides.get('limit') or global_overrides.get('n', 0))
+        if 'format' in global_overrides or 'f' in global_overrides:
+            output_format = global_overrides.get('format') or global_overrides.get('f')
+        if 'tailscale' in global_overrides:
+            args.tailscale = True
+
+    # 拒绝订阅相关命令
+    if args.command.startswith('subscribe'):
+        print(f"错误: 命令行工具不支持订阅功能 '{args.command}'", file=sys.stderr)
+        print("提示: 订阅功能需要回调函数支持，请使用 Python API 或 examples 脚本", file=sys.stderr)
+        sys.exit(1)
+
+    with create_client(args.host, args.port, args.secret, args.client_id,
+                       quiet=not args.verbose, use_tailscale=args.tailscale) as xt:
+        func = getattr(xt.xtdata, args.command, None)
+        if func is None:
+            print(f"错误: 未知命令 '{args.command}'", file=sys.stderr)
+            sys.exit(1)
+
+        params = parse_kv_args(args.args)
+        params = preprocess_params(params)
+
+        # 检查 callback 参数
+        if 'callback' in params:
+            print("错误: 命令行工具不支持回调参数 'callback'", file=sys.stderr)
+            print("提示: 回调功能需要使用 Python API 或 examples 脚本", file=sys.stderr)
+            sys.exit(1)
+
+        result = func(**params)
+        limit = None if args.limit == 0 else args.limit
+        format_output(result, limit, args.output, output_format, args.compact)
+
+
+if __name__ == "__main__":
+    main()
