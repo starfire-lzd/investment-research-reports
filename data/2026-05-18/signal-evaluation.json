@@ -1,0 +1,6 @@
+{
+  "generatedAt": "2026-05-18T12:44:35.680Z",
+  "targetDate": "2026-05-18",
+  "status": "error",
+  "error": "getaddrinfo ENOTFOUND push2.eastmoney.com"
+}
