@@ -4,9 +4,8 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
-from xqshare import XtQuantRemote
-
 from .codes import normalize_code
+from .utils import run_xtdata
 
 
 def _normalize_tick(xt_code: str, tick: dict[str, Any]) -> dict[str, Any]:
@@ -45,19 +44,17 @@ def fetch_ticks(
 ) -> dict[str, dict[str, Any]]:
     """Fetch realtime ticks from xqshare and return a dict keyed by plain code."""
     xt_codes = [normalize_code(code) for code in codes]
-    xt = XtQuantRemote(host=host, port=port, client_secret=secret, use_tailscale=use_tailscale)
-    try:
-        raw = xt.xtdata.get_full_tick(xt_codes) or {}
-    finally:
-        xt.close()
+    raw = run_xtdata(
+        lambda xtdata: xtdata.get_full_tick(xt_codes) or {},
+        host=host,
+        port=port,
+        secret=secret,
+        use_tailscale=use_tailscale,
+    )
 
     return {xt_code.split(".", 1)[0]: _normalize_tick(xt_code, tick) for xt_code, tick in raw.items()}
 
 
 def fetch_klines(code: str, period: str = "1d", count: int = 20):
     """Fetch K-line data through xtquant via xqshare."""
-    xt = XtQuantRemote()
-    try:
-        return xt.xtdata.get_market_data_ex([], [normalize_code(code)], period=period, count=count)
-    finally:
-        xt.close()
+    return run_xtdata(lambda xtdata: xtdata.get_market_data_ex([], [normalize_code(code)], period=period, count=count))
